@@ -1,4 +1,4 @@
-package org.acme;
+package org.acme.boundary;
 
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;

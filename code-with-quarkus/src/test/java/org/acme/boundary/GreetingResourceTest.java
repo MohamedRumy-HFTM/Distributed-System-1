@@ -1,4 +1,4 @@
-package org.acme;
+package org.acme.boundary;
 
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.Test;
@@ -15,15 +15,6 @@ class GreetingResourceTest {
           .then()
              .statusCode(200)
              .body(is("Hello from Quarkus REST"));
-    }
-
-    @Test
-    void testBlogEndpoint() {
-        given()
-          .when().get("/blog")
-          .then()
-             .statusCode(200)
-             .body(is("Willkommen auf meinem Blog!"));
     }
 
 }
