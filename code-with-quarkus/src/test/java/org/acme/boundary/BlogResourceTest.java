@@ -86,6 +86,43 @@ class BlogResourceTest {
     }
 
     @Test
+    void updatingBlogReplacesItsFields() {
+        // Arrange
+        Integer id = given()
+              .contentType("application/json")
+              .body("{\"title\":\"Vorher\",\"content\":\"alter Inhalt\"}")
+            .when().post("/blogs")
+            .then().statusCode(201)
+            .extract().path("id");
+
+        // Act
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"Nachher\",\"content\":\"neuer Inhalt\"}")
+            .when().put("/blogs/" + id)
+            .then()
+               .statusCode(200)
+               .body("title", is("Nachher"));
+
+        // Assert
+        given()
+          .when().get("/blogs/" + id)
+          .then()
+             .statusCode(200)
+             .body("title", is("Nachher"))
+             .body("content", is("neuer Inhalt"));
+    }
+
+    @Test
+    void updatingUnknownBlogReturnsNotFound() {
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"Egal\",\"content\":\"Egal\"}")
+            .when().put("/blogs/999999")
+            .then().statusCode(404);
+    }
+
+    @Test
     void unknownBlogReturnsNotFound() {
         given().when().get("/blogs/999999").then().statusCode(404);
     }

@@ -45,6 +45,25 @@ public class BlogService {
     }
 
     /**
+     * Aktualisiert Titel und Inhalt eines bestehenden Blogs.
+     * Die geladene Entity ist innerhalb der Transaktion managed, daher genuegt
+     * das Setzen der Felder - Hibernate schreibt die Aenderung beim Flush selbst
+     * (Dirty Checking), ein explizites persist() waere ueberfluessig.
+     */
+    @Transactional
+    public Blog updateBlog(Long id, Blog changed) {
+        Blog blog = blogRepository.findById(id);
+        if (blog == null) {
+            Log.warn("Blog " + id + " not found, nothing updated");
+            return null;
+        }
+        blog.setTitle(changed.getTitle());
+        blog.setContent(changed.getContent());
+        Log.info("Updated blog " + id + " to title " + blog.getTitle());
+        return blog;
+    }
+
+    /**
      * Loescht ueber die Entity statt ueber deleteById, damit Cascade und
      * orphanRemoval greifen und die Kommentare mitgeloescht werden.
      */

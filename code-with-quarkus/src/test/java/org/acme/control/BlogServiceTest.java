@@ -78,6 +78,28 @@ public class BlogServiceTest {
 
     @Test
     @TestTransaction
+    void updatingBlogChangesTitleAndContent() {
+        // Arrange
+        Blog blog = new Blog("Alter Titel", "Alter Inhalt");
+        blogService.addBlog(blog);
+
+        // Act
+        Blog updated = blogService.updateBlog(blog.getId(), new Blog("Neuer Titel", "Neuer Inhalt"));
+
+        // Assert
+        assertNotNull(updated);
+        assertEquals("Neuer Titel", updated.getTitle());
+        assertEquals("Neuer Inhalt", blogService.getBlog(blog.getId()).getContent());
+    }
+
+    @Test
+    @TestTransaction
+    void updatingMissingBlogIsRejected() {
+        assertNull(blogService.updateBlog(999999L, new Blog("Egal", "Egal")));
+    }
+
+    @Test
+    @TestTransaction
     void commentOnMissingBlogIsRejected() {
         // Arrange / Act
         Comment orphan = blogService.addComment(999999L, new Comment("Mallory", "Ghost comment"));
