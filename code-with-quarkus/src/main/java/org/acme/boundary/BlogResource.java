@@ -1,6 +1,7 @@
 package org.acme.boundary;
 
 import java.util.List;
+import java.util.Set;
 
 import org.acme.control.BlogService;
 import org.acme.control.PagedResult;
@@ -20,6 +21,9 @@ import org.jboss.resteasy.reactive.RestPath;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Valid;
+import jakarta.validation.Validator;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.DefaultValue;
@@ -50,6 +54,14 @@ public class BlogResource {
 
     @Inject
     BlogService blogService;
+
+    /**
+     * Wird fuer den Pruef-Endpunkt gebraucht: dort soll die Validierung ein
+     * Ergebnis LIEFERN, statt den Aufruf mit einer Exception abzubrechen.
+     * Genau dafuer loest man sie von Hand aus statt ueber @Valid.
+     */
+    @Inject
+    Validator validator;
 
     /**
      * LERNKONSTRUKT, keine echte Absicherung: ein fest konfiguriertes Token im
@@ -119,10 +131,15 @@ public class BlogResource {
                     value = "{\"title\": \"Mein erster Blogbeitrag\", \"content\": \"Hallo Welt\"}") }))
     @APIResponses({
             @APIResponse(responseCode = "201", description = "Angelegt, Location-Header verweist auf die neue Ressource"),
-            @APIResponse(responseCode = "400", description = "Request-Body oder Titel fehlt") })
-    public Response create(Blog blog, @Context UriInfo uriInfo) {
-        if (blog == null || blog.getTitle() == null || blog.getTitle().isBlank()) {
-            throw new ResponseException(Status.BAD_REQUEST, "Request-Body oder Titel fehlt");
+            @APIResponse(responseCode = "400", description = "Eingabe verletzt eine Regel",
+                    content = @Content(mediaType = MediaType.APPLICATION_JSON,
+                            schema = @Schema(implementation = ValidationErrorResponse.class))) })
+    public Response create(@Valid Blog blog, @Context UriInfo uriInfo) {
+        // Die Feldregeln pruefte bereits @Valid, bevor diese Methode lief.
+        // Ein voellig fehlender Body kommt aber als null an und loest keine
+        // Verletzung aus - dieser Fall bleibt daher von Hand zu pruefen.
+        if (blog == null) {
+            throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
         blogService.addBlog(blog);
 
@@ -131,16 +148,48 @@ public class BlogResource {
         return Response.created(builder.build()).entity(blog).build();
     }
 
+    /**
+     * Prueft einen Blog, ohne ihn zu speichern. Hier wird die Validierung
+     * bewusst von Hand ueber den injizierten Validator ausgeloest: mit @Valid
+     * waere der Aufruf schon vor dem Methodenrumpf abgebrochen, das Ergebnis der
+     * Pruefung ist hier aber genau das, was der Client wissen will. Ein Frontend
+     * kann so ein Formular pruefen, bevor der Nutzer es abschickt.
+     */
+    @POST
+    @Path("validate")
+    @Operation(summary = "Blog pruefen, ohne zu speichern",
+            description = "Antwortet mit 204, wenn der Blog gueltig waere, sonst mit 400 und der Liste der verletzten Regeln.")
+    @APIResponses({
+            @APIResponse(responseCode = "204", description = "Der Blog wuerde die Validierung bestehen"),
+            @APIResponse(responseCode = "400", description = "Liste der verletzten Regeln",
+                    content = @Content(mediaType = MediaType.APPLICATION_JSON,
+                            schema = @Schema(implementation = ValidationErrorResponse.class))) })
+    public Response validate(Blog blog) {
+        if (blog == null) {
+            throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
+        }
+        Set<ConstraintViolation<Blog>> violations = validator.validate(blog);
+        if (violations.isEmpty()) {
+            return Response.noContent().build();
+        }
+        int status = Status.BAD_REQUEST.getStatusCode();
+        return Response.status(status)
+                .entity(ValidationErrorResponse.of(status, violations))
+                .build();
+    }
+
     @PUT
     @Path("{id}")
     @Operation(summary = "Blog aendern", description = "Ersetzt Titel und Inhalt eines bestehenden Blogeintrags.")
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Blog wurde aktualisiert"),
-            @APIResponse(responseCode = "400", description = "Request-Body oder Titel fehlt"),
+            @APIResponse(responseCode = "400", description = "Eingabe verletzt eine Regel",
+                    content = @Content(mediaType = MediaType.APPLICATION_JSON,
+                            schema = @Schema(implementation = ValidationErrorResponse.class))),
             @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
-    public Blog update(@PathParam("id") Long id, Blog blog) {
-        if (blog == null || blog.getTitle() == null || blog.getTitle().isBlank()) {
-            throw new ResponseException(Status.BAD_REQUEST, "Request-Body oder Titel fehlt");
+    public Blog update(@PathParam("id") Long id, @Valid Blog blog) {
+        if (blog == null) {
+            throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
         Blog updated = blogService.updateBlog(id, blog);
         if (updated == null) {
@@ -198,11 +247,13 @@ public class BlogResource {
                     value = "{\"author\": \"Alice\", \"text\": \"Toller Beitrag!\"}") }))
     @APIResponses({
             @APIResponse(responseCode = "201", description = "Kommentar wurde angelegt"),
-            @APIResponse(responseCode = "400", description = "Request-Body, Autor oder Text fehlt"),
+            @APIResponse(responseCode = "400", description = "Eingabe verletzt eine Regel",
+                    content = @Content(mediaType = MediaType.APPLICATION_JSON,
+                            schema = @Schema(implementation = ValidationErrorResponse.class))),
             @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
-    public Response addComment(@RestPath Long id, Comment comment, @Context UriInfo uriInfo) {
-        if (comment == null || comment.getText() == null || comment.getText().isBlank()) {
-            throw new ResponseException(Status.BAD_REQUEST, "Request-Body oder Text fehlt");
+    public Response addComment(@RestPath Long id, @Valid Comment comment, @Context UriInfo uriInfo) {
+        if (comment == null) {
+            throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
         Comment created = blogService.addComment(id, comment);
         if (created == null) {

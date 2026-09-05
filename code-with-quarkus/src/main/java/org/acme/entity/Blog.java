@@ -11,6 +11,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 @Entity
 @Schema(name = "Blog", description = "Ein Blogeintrag mit Titel und Inhalt.")
@@ -25,10 +27,18 @@ public class Blog {
     @GeneratedValue
     private Long id;
 
+    /**
+     * @NotBlank statt des vom Aufgabentext gezeigten @NotNull: @Size(min = 5)
+     * allein liesse einen Titel aus fuenf Leerzeichen durchgehen, @NotBlank
+     * schliesst null, Leerstring und reine Leerzeichen gemeinsam aus.
+     */
     @Schema(required = true, examples = { "Mein erster Blogbeitrag" }, description = "Titel des Beitrags.")
+    @NotBlank(message = "Titel darf nicht leer sein.")
+    @Size(min = 5, message = "Titel braucht mindestens 5 Zeichen.")
     private String title;
 
     @Schema(examples = { "Das ist der Inhalt meines Beitrags." }, description = "Fliesstext des Beitrags.")
+    @NotBlank(message = "Inhalt darf nicht leer sein.")
     private String content;
 
     @Schema(hidden = true)

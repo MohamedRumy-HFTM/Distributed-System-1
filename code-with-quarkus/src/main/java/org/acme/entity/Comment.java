@@ -7,6 +7,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.ManyToOne;
+import jakarta.validation.constraints.NotBlank;
 
 @Entity
 @Schema(name = "Comment", description = "Ein Kommentar zu einem Blogeintrag.")
@@ -18,9 +19,11 @@ public class Comment {
     private Long id;
 
     @Schema(required = true, examples = { "Alice" }, description = "Name der kommentierenden Person.")
+    @NotBlank(message = "Autor darf nicht leer sein.")
     private String author;
 
     @Schema(required = true, examples = { "Toller Beitrag!" }, description = "Der Kommentartext.")
+    @NotBlank(message = "Kommentartext darf nicht leer sein.")
     private String text;
 
     /**

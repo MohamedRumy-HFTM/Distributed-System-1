@@ -99,6 +99,26 @@ class OpenApiTest {
     }
 
     /**
+     * Die 400-Antworten sollen nicht nur beschrieben, sondern mit dem konkreten
+     * Fehlerformat verknuepft sein - sonst weiss ein Client zwar, DASS ein 400
+     * kommen kann, aber nicht, wie er es auswertet.
+     */
+    @Test
+    void openApiDocumentLinksTheValidationErrorSchema() {
+        given()
+              .accept("application/json")
+            .when().get("/q/openapi")
+            .then()
+               .statusCode(200)
+               .body("paths.'/blogs'.post.responses.'400'.content.'application/json'.schema.$ref",
+                       is("#/components/schemas/ValidationErrorResponse"))
+               .body("paths.'/blogs/validate'.post.responses.'400'.content.'application/json'.schema.$ref",
+                       is("#/components/schemas/ValidationErrorResponse"))
+               .body("components.schemas.ValidationErrorResponse.properties.violations.items.$ref",
+                       is("#/components/schemas/Violation"));
+    }
+
+    /**
      * Der generische Wrapper wird von SmallRye zur konkreten Auspraegung
      * PagedResultBlog aufgeloest. Wichtig ist, dass data typisiert auf Blog
      * verweist - sonst waere die Dokumentation fuer einen Client wertlos.

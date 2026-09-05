@@ -3,6 +3,9 @@ package org.acme.boundary;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.hasItems;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -136,7 +139,8 @@ class BlogResourceTest {
             .when().post("/blogs")
             .then()
                .statusCode(400)
-               .header("info", is("Request-Body oder Titel fehlt"));
+               .body("title", is("Constraint Violation"))
+               .body("violations.field", hasItem("title"));
     }
 
     @Test
@@ -146,6 +150,30 @@ class BlogResourceTest {
               .body("{\"title\":\"   \",\"content\":\"nur Leerzeichen\"}")
             .when().post("/blogs")
             .then().statusCode(400);
+    }
+
+    @Test
+    void creatingBlogWithTooShortTitleIsRejected() {
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"kurz\",\"content\":\"Titel hat nur vier Zeichen\"}")
+            .when().post("/blogs")
+            .then()
+               .statusCode(400)
+               .body("violations.field", hasItem("title"))
+               .body("violations.find { it.field == 'title' }.message",
+                       is("Titel braucht mindestens 5 Zeichen."));
+    }
+
+    @Test
+    void creatingBlogWithoutContentIsRejected() {
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"Titel ist lang genug\"}")
+            .when().post("/blogs")
+            .then()
+               .statusCode(400)
+               .body("violations.field", hasItem("content"));
     }
 
     // --- Aendern und Loeschen -------------------------------------------------
@@ -171,11 +199,25 @@ class BlogResourceTest {
 
     @Test
     void updatingUnknownBlogReturnsNotFound() {
+        // Titel bewusst >= 5 Zeichen: sonst greift die Validierung vor dem
+        // Datenbankzugriff und die Antwort waere 400 statt des geprueften 404.
         given()
               .contentType("application/json")
-              .body("{\"title\":\"Egal\",\"content\":\"Egal\"}")
+              .body("{\"title\":\"Beliebiger Titel\",\"content\":\"Beliebiger Inhalt\"}")
             .when().put("/blogs/999999")
             .then().statusCode(404);
+    }
+
+    @Test
+    void updatingWithInvalidBodyIsRejectedBeforeLookup() {
+        // Ungueltige Eingabe schlaegt frueher zu als die fehlende Id: 400, nicht 404.
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"kurz\",\"content\":\"zu kurzer Titel\"}")
+            .when().put("/blogs/999999")
+            .then()
+               .statusCode(400)
+               .body("violations.field", hasItem("title"));
     }
 
     @Test
@@ -200,6 +242,43 @@ class BlogResourceTest {
         // Gueltiges Token -> 204, danach ist der Blog weg
         given().header(TOKEN_HEADER, VALID_TOKEN).when().delete("/blogs/" + id).then().statusCode(204);
         given().when().get("/blogs/" + id).then().statusCode(404);
+    }
+
+    // --- Pruefen ohne Speichern ----------------------------------------------
+
+    @Test
+    void validateAcceptsAValidBlog() {
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"Gueltiger Titel\",\"content\":\"Gueltiger Inhalt\"}")
+            .when().post("/blogs/validate")
+            .then().statusCode(204);
+    }
+
+    @Test
+    void validateReportsEveryViolation() {
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"kurz\",\"content\":\"\"}")
+            .when().post("/blogs/validate")
+            .then()
+               .statusCode(400)
+               .body("title", is("Constraint Violation"))
+               .body("violations.field", hasItems("content", "title"));
+    }
+
+    @Test
+    void validateDoesNotPersistAnything() {
+        int before = given().when().get("/blogs").then().statusCode(200).extract().path("totalCount");
+
+        given()
+              .contentType("application/json")
+              .body("{\"title\":\"Wird nicht gespeichert\",\"content\":\"nur geprueft\"}")
+            .when().post("/blogs/validate")
+            .then().statusCode(204);
+
+        int after = given().when().get("/blogs").then().statusCode(200).extract().path("totalCount");
+        assertEquals(before, after, "Der Pruef-Endpunkt darf nichts speichern");
     }
 
     // --- Kommentare ----------------------------------------------------------

@@ -13,6 +13,7 @@ import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.validation.Valid;
 
 @ApplicationScoped
 public class BlogService {
@@ -75,8 +76,13 @@ public class BlogService {
         return blogRepository.count();
     }
 
+    /**
+     * @Valid greift hier als CDI-Methodenvalidierung. Sie schuetzt den Service
+     * auch dann, wenn er nicht ueber die REST-Schicht aufgerufen wird - die
+     * Boundary allein abzusichern liesse programmatische Aufrufe ungeprueft.
+     */
     @Transactional
-    public void addBlog(Blog blog) {
+    public void addBlog(@Valid Blog blog) {
         Log.info("Adding blog " + blog.getTitle());
         blogRepository.persist(blog);
     }
@@ -87,8 +93,9 @@ public class BlogService {
      * das Setzen der Felder - Hibernate schreibt die Aenderung beim Flush selbst
      * (Dirty Checking), ein explizites persist() waere ueberfluessig.
      */
+    @Valid
     @Transactional
-    public Blog updateBlog(Long id, Blog changed) {
+    public Blog updateBlog(Long id, @Valid Blog changed) {
         Blog blog = blogRepository.findById(id);
         if (blog == null) {
             Log.warn("Blog " + id + " not found, nothing updated");
@@ -121,7 +128,7 @@ public class BlogService {
     }
 
     @Transactional
-    public Comment addComment(Long blogId, Comment comment) {
+    public Comment addComment(Long blogId, @Valid Comment comment) {
         Blog blog = blogRepository.findById(blogId);
         if (blog == null) {
             Log.warn("Blog " + blogId + " not found, comment rejected");

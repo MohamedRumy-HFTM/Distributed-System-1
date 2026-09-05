@@ -3,6 +3,7 @@ package org.acme.control;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import jakarta.validation.ConstraintViolationException;
 
 @QuarkusTest
 public class BlogServiceTest {
@@ -95,7 +97,31 @@ public class BlogServiceTest {
     @Test
     @TestTransaction
     void updatingMissingBlogIsRejected() {
-        assertNull(blogService.updateBlog(999999L, new Blog("Egal", "Egal")));
+        // Gueltige Nutzdaten, damit wirklich die fehlende Id geprueft wird und
+        // nicht vorher schon die Validierung zuschlaegt.
+        assertNull(blogService.updateBlog(999999L, new Blog("Beliebiger Titel", "Beliebiger Inhalt")));
+    }
+
+    @Test
+    @TestTransaction
+    void serviceRejectsBlogWithTooShortTitle() {
+        // Die Methodenvalidierung schuetzt den Service auch ohne REST-Schicht.
+        ConstraintViolationException thrown = assertThrows(ConstraintViolationException.class,
+                () -> blogService.addBlog(new Blog("kurz", "Titel hat nur vier Zeichen")));
+
+        assertEquals(1, thrown.getConstraintViolations().size());
+        assertEquals("Titel braucht mindestens 5 Zeichen.",
+                thrown.getConstraintViolations().iterator().next().getMessage());
+    }
+
+    @Test
+    @TestTransaction
+    void serviceRejectsCommentWithoutText() {
+        Blog blog = new Blog("Blog fuer Kommentartest", "Inhalt");
+        blogService.addBlog(blog);
+
+        assertThrows(ConstraintViolationException.class,
+                () -> blogService.addComment(blog.getId(), new Comment("Alice", "  ")));
     }
 
     @Test
