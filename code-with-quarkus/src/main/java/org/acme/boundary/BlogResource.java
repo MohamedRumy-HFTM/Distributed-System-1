@@ -3,10 +3,18 @@ package org.acme.boundary;
 import java.util.List;
 
 import org.acme.control.BlogService;
+import org.acme.control.PagedResult;
 import org.acme.entity.Blog;
 import org.acme.entity.Comment;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.ExampleObject;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
+import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.jboss.resteasy.reactive.RestPath;
 
@@ -14,15 +22,21 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
+import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.Response.Status;
+import jakarta.ws.rs.core.UriBuilder;
+import jakarta.ws.rs.core.UriInfo;
 
 @Path("blogs")
 @ApplicationScoped
@@ -31,16 +45,49 @@ import jakarta.ws.rs.core.Response;
 @Tag(name = "Blogs", description = "Blogeintraege anlegen, lesen, aendern und loeschen")
 public class BlogResource {
 
+    /** Name des Headers, der die Berechtigung fuer loeschende Zugriffe traegt. */
+    public static final String ADMIN_TOKEN_HEADER = "X-Admin-Token";
+
     @Inject
     BlogService blogService;
 
+    /**
+     * LERNKONSTRUKT, keine echte Absicherung: ein fest konfiguriertes Token im
+     * Klartext ersetzt keine Authentifizierung. Es dient hier nur dazu,
+     * @HeaderParam zusammen mit den Statuscodes 401 und 403 zu zeigen.
+     */
+    @ConfigProperty(name = "blog.admin-token", defaultValue = "local-dev-token")
+    String adminToken;
+
     @GET
-    @Operation(summary = "Alle Blogs auflisten, optional nach Titel gefiltert")
-    public List<Blog> list(@QueryParam("title") String title) {
-        if (title == null || title.isBlank()) {
-            return blogService.getBlogs();
+    @Operation(summary = "Blogs auflisten",
+            description = "Liefert eine Seite von Blogeintraegen zusammen mit der Gesamtzahl der Treffer. "
+                    + "Unterstuetzt Volltextsuche ueber Titel und Inhalt, Sortierung und Paging.")
+    @APIResponses({
+            @APIResponse(responseCode = "200", description = "Seite mit Datensaetzen und Metadaten"),
+            @APIResponse(responseCode = "400", description = "Ungueltiger Such-, Sortier- oder Paging-Parameter") })
+    public PagedResult<Blog> list(
+            @Parameter(description = "Volltextsuche in Titel und Inhalt") @QueryParam("searchString") String searchString,
+            @Parameter(description = "Sortierfeld: id, title oder content") @QueryParam("sortBy") @DefaultValue("id") String sortBy,
+            @Parameter(description = "Sortierrichtung: asc oder desc") @QueryParam("orderBy") @DefaultValue("asc") String orderBy,
+            @Parameter(description = "Nullbasierte Seitennummer") @QueryParam("page") @DefaultValue("0") int page,
+            @Parameter(description = "Datensaetze pro Seite, hoechstens 100") @QueryParam("size") @DefaultValue("10") int size) {
+
+        if (page < 0) {
+            throw new ResponseException(Status.BAD_REQUEST, "page darf nicht negativ sein");
         }
-        return blogService.searchByTitle(title);
+        if (size < 1) {
+            throw new ResponseException(Status.BAD_REQUEST, "size muss mindestens 1 sein");
+        }
+        if (size > BlogService.MAX_PAGE_SIZE) {
+            throw new ResponseException(Status.BAD_REQUEST, "size darf hoechstens " + BlogService.MAX_PAGE_SIZE + " sein");
+        }
+        if (!blogService.isSortable(sortBy)) {
+            throw new ResponseException(Status.BAD_REQUEST, "sortBy muss eines von " + BlogService.SORTABLE_FIELDS + " sein");
+        }
+        boolean descending = toDescending(orderBy);
+
+        return blogService.findBlogs(searchString, sortBy, descending, page, size);
     }
 
     /**
@@ -48,46 +95,77 @@ public class BlogResource {
      */
     @GET
     @Path("{id}")
-    @Operation(summary = "Einen Blog anhand seiner Id lesen")
-    @APIResponse(responseCode = "200", description = "Blog gefunden")
-    @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id")
-    public Response getById(@PathParam("id") Long id) {
+    @Operation(summary = "Einen Blog lesen", description = "Liefert einen einzelnen Blogeintrag anhand seiner Id.")
+    @APIResponses({
+            @APIResponse(responseCode = "200", description = "Blog gefunden"),
+            @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
+    public Blog getById(@PathParam("id") Long id) {
         Blog blog = blogService.getBlog(id);
         if (blog == null) {
-            return Response.status(Response.Status.NOT_FOUND).build();
+            throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
-        return Response.ok(blog).build();
+        return blog;
     }
 
     @POST
-    @Operation(summary = "Neuen Blog anlegen")
-    @APIResponse(responseCode = "201", description = "Blog wurde angelegt")
-    public Response create(Blog blog) {
+    @Operation(summary = "Neuen Blog anlegen",
+            description = "Legt einen Blogeintrag an. Die Id vergibt der Server, sie darf im Request-Body fehlen. "
+                    + "Die Antwort nennt im Location-Header die URI der neuen Ressource.")
+    @RequestBody(content = @Content(
+            mediaType = MediaType.APPLICATION_JSON,
+            schema = @Schema(implementation = Blog.class),
+            examples = { @ExampleObject(
+                    name = "Neuer Blog",
+                    value = "{\"title\": \"Mein erster Blogbeitrag\", \"content\": \"Hallo Welt\"}") }))
+    @APIResponses({
+            @APIResponse(responseCode = "201", description = "Angelegt, Location-Header verweist auf die neue Ressource"),
+            @APIResponse(responseCode = "400", description = "Request-Body oder Titel fehlt") })
+    public Response create(Blog blog, @Context UriInfo uriInfo) {
+        if (blog == null || blog.getTitle() == null || blog.getTitle().isBlank()) {
+            throw new ResponseException(Status.BAD_REQUEST, "Request-Body oder Titel fehlt");
+        }
         blogService.addBlog(blog);
-        return Response.status(Response.Status.CREATED).entity(blog).build();
+
+        // Aus /blogs wird /blogs/{neueId} - der Client muss die Id nicht erraten.
+        UriBuilder builder = uriInfo.getAbsolutePathBuilder().path(Long.toString(blog.getId()));
+        return Response.created(builder.build()).entity(blog).build();
     }
 
     @PUT
     @Path("{id}")
-    @Operation(summary = "Titel und Inhalt eines bestehenden Blogs ersetzen")
-    @APIResponse(responseCode = "200", description = "Blog wurde aktualisiert")
-    @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id")
-    public Response update(@PathParam("id") Long id, Blog blog) {
+    @Operation(summary = "Blog aendern", description = "Ersetzt Titel und Inhalt eines bestehenden Blogeintrags.")
+    @APIResponses({
+            @APIResponse(responseCode = "200", description = "Blog wurde aktualisiert"),
+            @APIResponse(responseCode = "400", description = "Request-Body oder Titel fehlt"),
+            @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
+    public Blog update(@PathParam("id") Long id, Blog blog) {
+        if (blog == null || blog.getTitle() == null || blog.getTitle().isBlank()) {
+            throw new ResponseException(Status.BAD_REQUEST, "Request-Body oder Titel fehlt");
+        }
         Blog updated = blogService.updateBlog(id, blog);
         if (updated == null) {
-            return Response.status(Response.Status.NOT_FOUND).build();
+            throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
-        return Response.ok(updated).build();
+        return updated;
     }
 
     @DELETE
     @Path("{id}")
-    @Operation(summary = "Blog samt seiner Kommentare loeschen")
-    @APIResponse(responseCode = "204", description = "Blog wurde geloescht")
-    @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id")
-    public Response delete(@PathParam("id") Long id) {
+    @Operation(summary = "Blog loeschen",
+            description = "Loescht einen Blogeintrag samt seiner Kommentare. Erfordert den Header " + ADMIN_TOKEN_HEADER + ".")
+    @APIResponses({
+            @APIResponse(responseCode = "204", description = "Blog wurde geloescht"),
+            @APIResponse(responseCode = "401", description = "Header " + ADMIN_TOKEN_HEADER + " fehlt"),
+            @APIResponse(responseCode = "403", description = "Token ist ungueltig"),
+            @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
+    public Response delete(
+            @PathParam("id") Long id,
+            @Parameter(description = "Berechtigungstoken fuer loeschende Zugriffe")
+            @HeaderParam(ADMIN_TOKEN_HEADER) String token) {
+
+        requireAdminToken(token);
         if (!blogService.deleteBlog(id)) {
-            return Response.status(Response.Status.NOT_FOUND).build();
+            throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
         return Response.noContent().build();
     }
@@ -100,25 +178,63 @@ public class BlogResource {
      */
     @GET
     @Path("{id}/comments")
-    @Operation(summary = "Kommentare eines Blogs auflisten")
-    @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id")
-    public Response comments(@RestPath Long id) {
-        if (blogService.getBlog(id) == null) {
-            return Response.status(Response.Status.NOT_FOUND).build();
-        }
-        return Response.ok(blogService.getComments(id)).build();
+    @Operation(summary = "Kommentare eines Blogs auflisten", description = "Liefert alle Kommentare zum angegebenen Blogeintrag.")
+    @APIResponses({
+            @APIResponse(responseCode = "200", description = "Liste der Kommentare"),
+            @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
+    public List<Comment> comments(@RestPath Long id) {
+        requireExistingBlog(id);
+        return blogService.getComments(id);
     }
 
     @POST
     @Path("{id}/comments")
-    @Operation(summary = "Kommentar zu einem Blog hinzufuegen")
-    @APIResponse(responseCode = "201", description = "Kommentar wurde angelegt")
-    @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id")
-    public Response addComment(@RestPath Long id, Comment comment) {
+    @Operation(summary = "Kommentar hinzufuegen", description = "Haengt einen Kommentar an einen bestehenden Blogeintrag.")
+    @RequestBody(content = @Content(
+            mediaType = MediaType.APPLICATION_JSON,
+            schema = @Schema(implementation = Comment.class),
+            examples = { @ExampleObject(
+                    name = "Neuer Kommentar",
+                    value = "{\"author\": \"Alice\", \"text\": \"Toller Beitrag!\"}") }))
+    @APIResponses({
+            @APIResponse(responseCode = "201", description = "Kommentar wurde angelegt"),
+            @APIResponse(responseCode = "400", description = "Request-Body, Autor oder Text fehlt"),
+            @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
+    public Response addComment(@RestPath Long id, Comment comment, @Context UriInfo uriInfo) {
+        if (comment == null || comment.getText() == null || comment.getText().isBlank()) {
+            throw new ResponseException(Status.BAD_REQUEST, "Request-Body oder Text fehlt");
+        }
         Comment created = blogService.addComment(id, comment);
         if (created == null) {
-            return Response.status(Response.Status.NOT_FOUND).build();
+            throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
-        return Response.status(Response.Status.CREATED).entity(created).build();
+        return Response.created(uriInfo.getAbsolutePathBuilder().path(Long.toString(created.getId())).build())
+                .entity(created)
+                .build();
+    }
+
+    private void requireExistingBlog(Long id) {
+        if (blogService.getBlog(id) == null) {
+            throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
+        }
+    }
+
+    private void requireAdminToken(String token) {
+        if (token == null || token.isBlank()) {
+            throw new ResponseException(Status.UNAUTHORIZED, "Header " + ADMIN_TOKEN_HEADER + " fehlt");
+        }
+        if (!adminToken.equals(token)) {
+            throw new ResponseException(Status.FORBIDDEN, "Ungueltiges Token im Header " + ADMIN_TOKEN_HEADER);
+        }
+    }
+
+    private boolean toDescending(String orderBy) {
+        if ("desc".equalsIgnoreCase(orderBy)) {
+            return true;
+        }
+        if ("asc".equalsIgnoreCase(orderBy)) {
+            return false;
+        }
+        throw new ResponseException(Status.BAD_REQUEST, "orderBy muss asc oder desc sein");
     }
 }

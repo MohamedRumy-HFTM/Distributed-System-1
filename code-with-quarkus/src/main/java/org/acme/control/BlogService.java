@@ -1,27 +1,64 @@
 package org.acme.control;
 
 import java.util.List;
+import java.util.Set;
 
 import org.acme.entity.Blog;
 import org.acme.entity.Comment;
 
+import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.logging.Log;
+import io.quarkus.panache.common.Page;
+import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 
 @ApplicationScoped
 public class BlogService {
+
+    /**
+     * Felder, nach denen sortiert werden darf. Die Whitelist ist notwendig, weil
+     * ein Sortierfeld als Bezeichner in die JPQL-order-by-Klausel eingesetzt wird
+     * und dort - anders als ein Suchbegriff - nicht als Parameter gebunden werden
+     * kann. Ohne diese Pruefung waere ?sortBy=... eine Injection-Flaeche.
+     */
+    public static final Set<String> SORTABLE_FIELDS = Set.of("id", "title", "content");
+
+    /** Obergrenze fuer die Seitengroesse, damit ein Client nicht die ganze Tabelle anfordert. */
+    public static final int MAX_PAGE_SIZE = 100;
+
     @Inject
     BlogRepository blogRepository;
 
     @Inject
     CommentRepository commentRepository;
 
+    public boolean isSortable(String field) {
+        return SORTABLE_FIELDS.contains(field);
+    }
+
     public List<Blog> getBlogs() {
         var blogs = blogRepository.listAll();
         Log.info("Returning " + blogs.size() + " blogs");
         return blogs;
+    }
+
+    /**
+     * Sucht, sortiert und paginiert in einem Durchgang. Gesamtzahl und
+     * Seiteninhalt stammen aus derselben Abfrage, sind also garantiert konsistent.
+     * Der Aufrufer muss sortBy zuvor mit isSortable(...) geprueft haben.
+     */
+    public PagedResult<Blog> findBlogs(String searchString, String sortBy, boolean descending, int page, int size) {
+        Sort sort = Sort.by(sortBy, descending ? Sort.Direction.Descending : Sort.Direction.Ascending);
+        PanacheQuery<Blog> query = blogRepository.search(searchString, sort).page(Page.of(page, size));
+
+        long totalCount = query.count();
+        int pageCount = query.pageCount();
+        List<Blog> data = query.list();
+
+        Log.info("Returning page " + page + " with " + data.size() + " of " + totalCount + " blogs");
+        return new PagedResult<>(data, totalCount, page, size, pageCount);
     }
 
     public Blog getBlog(Long id) {
