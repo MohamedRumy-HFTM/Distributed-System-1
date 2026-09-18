@@ -20,9 +20,16 @@ class BlogResourceTest {
     private static final String VALID_TOKEN = "local-dev-token";
 
     private ExtractableResponse<?> createBlog(String title, String content) {
+        String requestBody = """
+                {
+                    "title": "%s",
+                    "content": "%s"
+                }
+                """.formatted(title, content);
+
         return given()
                   .contentType("application/json")
-                  .body("{\"title\":\"" + title + "\",\"content\":\"" + content + "\"}")
+                  .body(requestBody)
                 .when().post("/blogs")
                 .then().statusCode(201)
                 .extract();
@@ -135,7 +142,11 @@ class BlogResourceTest {
     void creatingBlogWithoutTitleIsRejected() {
         given()
               .contentType("application/json")
-              .body("{\"content\":\"kein Titel gesetzt\"}")
+              .body("""
+                      {
+                          "content": "kein Titel gesetzt"
+                      }
+                      """)
             .when().post("/blogs")
             .then()
                .statusCode(400)
@@ -147,7 +158,12 @@ class BlogResourceTest {
     void creatingBlogWithBlankTitleIsRejected() {
         given()
               .contentType("application/json")
-              .body("{\"title\":\"   \",\"content\":\"nur Leerzeichen\"}")
+              .body("""
+                      {
+                          "title": "   ",
+                          "content": "nur Leerzeichen"
+                      }
+                      """)
             .when().post("/blogs")
             .then().statusCode(400);
     }
@@ -156,7 +172,12 @@ class BlogResourceTest {
     void creatingBlogWithTooShortTitleIsRejected() {
         given()
               .contentType("application/json")
-              .body("{\"title\":\"kurz\",\"content\":\"Titel hat nur vier Zeichen\"}")
+              .body("""
+                      {
+                          "title": "kurz",
+                          "content": "Titel hat nur vier Zeichen"
+                      }
+                      """)
             .when().post("/blogs")
             .then()
                .statusCode(400)
@@ -169,7 +190,11 @@ class BlogResourceTest {
     void creatingBlogWithoutContentIsRejected() {
         given()
               .contentType("application/json")
-              .body("{\"title\":\"Titel ist lang genug\"}")
+              .body("""
+                      {
+                          "title": "Titel ist lang genug"
+                      }
+                      """)
             .when().post("/blogs")
             .then()
                .statusCode(400)
@@ -184,7 +209,12 @@ class BlogResourceTest {
 
         given()
               .contentType("application/json")
-              .body("{\"title\":\"Nachher\",\"content\":\"neuer Inhalt\"}")
+              .body("""
+                      {
+                          "title": "Nachher",
+                          "content": "neuer Inhalt"
+                      }
+                      """)
             .when().put("/blogs/" + id)
             .then()
                .statusCode(200)
@@ -203,7 +233,12 @@ class BlogResourceTest {
         // Datenbankzugriff und die Antwort waere 400 statt des geprueften 404.
         given()
               .contentType("application/json")
-              .body("{\"title\":\"Beliebiger Titel\",\"content\":\"Beliebiger Inhalt\"}")
+              .body("""
+                      {
+                          "title": "Beliebiger Titel",
+                          "content": "Beliebiger Inhalt"
+                      }
+                      """)
             .when().put("/blogs/999999")
             .then().statusCode(404);
     }
@@ -213,7 +248,12 @@ class BlogResourceTest {
         // Ungueltige Eingabe schlaegt frueher zu als die fehlende Id: 400, nicht 404.
         given()
               .contentType("application/json")
-              .body("{\"title\":\"kurz\",\"content\":\"zu kurzer Titel\"}")
+              .body("""
+                      {
+                          "title": "kurz",
+                          "content": "zu kurzer Titel"
+                      }
+                      """)
             .when().put("/blogs/999999")
             .then()
                .statusCode(400)
@@ -250,7 +290,12 @@ class BlogResourceTest {
     void validateAcceptsAValidBlog() {
         given()
               .contentType("application/json")
-              .body("{\"title\":\"Gueltiger Titel\",\"content\":\"Gueltiger Inhalt\"}")
+              .body("""
+                      {
+                          "title": "Gueltiger Titel",
+                          "content": "Gueltiger Inhalt"
+                      }
+                      """)
             .when().post("/blogs/validate")
             .then().statusCode(204);
     }
@@ -259,7 +304,12 @@ class BlogResourceTest {
     void validateReportsEveryViolation() {
         given()
               .contentType("application/json")
-              .body("{\"title\":\"kurz\",\"content\":\"\"}")
+              .body("""
+                      {
+                          "title": "kurz",
+                          "content": ""
+                      }
+                      """)
             .when().post("/blogs/validate")
             .then()
                .statusCode(400)
@@ -273,7 +323,12 @@ class BlogResourceTest {
 
         given()
               .contentType("application/json")
-              .body("{\"title\":\"Wird nicht gespeichert\",\"content\":\"nur geprueft\"}")
+              .body("""
+                      {
+                          "title": "Wird nicht gespeichert",
+                          "content": "nur geprueft"
+                      }
+                      """)
             .when().post("/blogs/validate")
             .then().statusCode(204);
 
@@ -289,7 +344,12 @@ class BlogResourceTest {
 
         given()
               .contentType("application/json")
-              .body("{\"author\":\"Alice\",\"text\":\"Nice one\"}")
+              .body("""
+                      {
+                          "author": "Alice",
+                          "text": "Nice one"
+                      }
+                      """)
             .when().post("/blogs/" + blogId + "/comments")
             .then()
                .statusCode(201)
@@ -309,7 +369,11 @@ class BlogResourceTest {
 
         given()
               .contentType("application/json")
-              .body("{\"author\":\"Alice\"}")
+              .body("""
+                      {
+                          "author": "Alice"
+                      }
+                      """)
             .when().post("/blogs/" + blogId + "/comments")
             .then().statusCode(400);
     }
@@ -318,7 +382,12 @@ class BlogResourceTest {
     void commentOnUnknownBlogReturnsNotFound() {
         given()
               .contentType("application/json")
-              .body("{\"author\":\"Mallory\",\"text\":\"Ghost\"}")
+              .body("""
+                      {
+                          "author": "Mallory",
+                          "text": "Ghost"
+                      }
+                      """)
             .when().post("/blogs/999999/comments")
             .then().statusCode(404);
     }
