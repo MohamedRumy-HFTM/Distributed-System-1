@@ -78,7 +78,7 @@ public class BlogResource {
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Seite mit Datensaetzen und Metadaten"),
             @APIResponse(responseCode = "400", description = "Ungueltiger Such-, Sortier- oder Paging-Parameter") })
-    public PagedResult<Blog> list(
+    public PagedResult<BlogResponse> list(
             @Parameter(description = "Volltextsuche in Titel und Inhalt") @QueryParam("searchString") String searchString,
             @Parameter(description = "Sortierfeld: id, title oder content") @QueryParam("sortBy") @DefaultValue("id") String sortBy,
             @Parameter(description = "Sortierrichtung: asc oder desc") @QueryParam("orderBy") @DefaultValue("asc") String orderBy,
@@ -99,7 +99,8 @@ public class BlogResource {
         }
         boolean descending = toDescending(orderBy);
 
-        return blogService.findBlogs(searchString, sortBy, descending, page, size);
+        return blogService.findBlogs(searchString, sortBy, descending, page, size)
+                .map(BlogResponse::from);
     }
 
     /**
@@ -111,12 +112,12 @@ public class BlogResource {
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Blog gefunden"),
             @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
-    public Blog getById(@PathParam("id") Long id) {
+    public BlogResponse getById(@PathParam("id") Long id) {
         Blog blog = blogService.getBlog(id);
         if (blog == null) {
             throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
-        return blog;
+        return BlogResponse.from(blog);
     }
 
     @POST
@@ -125,7 +126,7 @@ public class BlogResource {
                     + "Die Antwort nennt im Location-Header die URI der neuen Ressource.")
     @RequestBody(content = @Content(
             mediaType = MediaType.APPLICATION_JSON,
-            schema = @Schema(implementation = Blog.class),
+            schema = @Schema(implementation = BlogRequest.class),
             examples = { @ExampleObject(
                     name = "Neuer Blog",
                     value = "{\"title\": \"Mein erster Blogbeitrag\", \"content\": \"Hallo Welt\"}") }))
@@ -134,18 +135,19 @@ public class BlogResource {
             @APIResponse(responseCode = "400", description = "Eingabe verletzt eine Regel",
                     content = @Content(mediaType = MediaType.APPLICATION_JSON,
                             schema = @Schema(implementation = ValidationErrorResponse.class))) })
-    public Response create(@Valid Blog blog, @Context UriInfo uriInfo) {
+    public Response create(@Valid BlogRequest request, @Context UriInfo uriInfo) {
         // Die Feldregeln pruefte bereits @Valid, bevor diese Methode lief.
         // Ein voellig fehlender Body kommt aber als null an und loest keine
         // Verletzung aus - dieser Fall bleibt daher von Hand zu pruefen.
-        if (blog == null) {
+        if (request == null) {
             throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
+        Blog blog = new Blog(request.title(), request.content());
         blogService.addBlog(blog);
 
         // Aus /blogs wird /blogs/{neueId} - der Client muss die Id nicht erraten.
         UriBuilder builder = uriInfo.getAbsolutePathBuilder().path(Long.toString(blog.getId()));
-        return Response.created(builder.build()).entity(blog).build();
+        return Response.created(builder.build()).entity(BlogResponse.from(blog)).build();
     }
 
     /**
@@ -164,11 +166,11 @@ public class BlogResource {
             @APIResponse(responseCode = "400", description = "Liste der verletzten Regeln",
                     content = @Content(mediaType = MediaType.APPLICATION_JSON,
                             schema = @Schema(implementation = ValidationErrorResponse.class))) })
-    public Response validate(Blog blog) {
-        if (blog == null) {
+    public Response validate(BlogRequest request) {
+        if (request == null) {
             throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
-        Set<ConstraintViolation<Blog>> violations = validator.validate(blog);
+        Set<ConstraintViolation<BlogRequest>> violations = validator.validate(request);
         if (violations.isEmpty()) {
             return Response.noContent().build();
         }
@@ -187,15 +189,15 @@ public class BlogResource {
                     content = @Content(mediaType = MediaType.APPLICATION_JSON,
                             schema = @Schema(implementation = ValidationErrorResponse.class))),
             @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
-    public Blog update(@PathParam("id") Long id, @Valid Blog blog) {
-        if (blog == null) {
+    public BlogResponse update(@PathParam("id") Long id, @Valid BlogRequest request) {
+        if (request == null) {
             throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
-        Blog updated = blogService.updateBlog(id, blog);
+        Blog updated = blogService.updateBlog(id, new Blog(request.title(), request.content()));
         if (updated == null) {
             throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
-        return updated;
+        return BlogResponse.from(updated);
     }
 
     @DELETE

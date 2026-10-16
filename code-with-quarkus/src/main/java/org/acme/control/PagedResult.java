@@ -1,6 +1,7 @@
 package org.acme.control;
 
 import java.util.List;
+import java.util.function.Function;
 
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
 
@@ -37,6 +38,11 @@ public class PagedResult<T> {
         this.page = page;
         this.size = size;
         this.pageCount = pageCount;
+    }
+
+    /** Bildet die Datensaetze auf einen anderen Typ ab; die Metadaten bleiben. */
+    public <R> PagedResult<R> map(Function<T, R> mapper) {
+        return new PagedResult<>(data.stream().map(mapper).toList(), totalCount, page, size, pageCount);
     }
 
     public List<T> getData() {

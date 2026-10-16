@@ -131,9 +131,9 @@ class OpenApiTest {
             .then()
                .statusCode(200)
                .body("paths.'/blogs'.get.responses.'200'.content.'application/json'.schema.$ref",
-                       is("#/components/schemas/PagedResultBlog"))
-               .body("components.schemas.PagedResultBlog.properties.data.items.$ref",
-                       is("#/components/schemas/Blog"))
-               .body("components.schemas.PagedResultBlog.properties.totalCount.description", notNullValue());
+                       is("#/components/schemas/PagedResultBlogResponse"))
+               .body("components.schemas.PagedResultBlogResponse.properties.data.items.$ref",
+                       is("#/components/schemas/BlogResponse"))
+               .body("components.schemas.PagedResultBlogResponse.properties.totalCount.description", notNullValue());
     }
 }
