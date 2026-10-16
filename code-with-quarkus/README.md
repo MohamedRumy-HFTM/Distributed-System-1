@@ -142,6 +142,121 @@ Zusätzlich geprüft und abgedeckt:
 Authentifizierung und Autorisierung (API1, API2, API5), Rate-Limiting (API4) und
 HTTPS-Terminierung.
 
+## Berechtigungskonzept
+
+Noch **nicht implementiert** — das folgt in der nächsten Einheit mit
+`@RolesAllowed` und der OIDC-Extension. Dies ist die Zielvorgabe, gegen die dann
+umgesetzt wird.
+
+### Rollen
+
+Drei Rollen, kumulativ gedacht: jede höhere kann alles, was die niedrigere kann.
+
+| Rolle | Darf |
+|---|---|
+| *(ohne Login)* | veröffentlichte Blogs und deren Kommentare lesen |
+| `reader` | zusätzlich kommentieren |
+| `author` | zusätzlich Blogs anlegen und ändern |
+| `admin` | zusätzlich Blogs löschen |
+
+Mehr Rollen wären für diese Domäne erfundene Komplexität. Ein eigener
+`moderator` (fremde Kommentare löschen) wird erst sinnvoll, wenn Kommentare
+überhaupt löschbar sind — heute sind sie es nicht.
+
+### Zugriffsregeln je Endpunkt
+
+| Methode | Pfad | Erforderlich | Begründung |
+|---|---|---|---|
+| GET | `/blogs` | – | Ein Blog ist zum Lesen da. Öffentlich ohne Login. |
+| GET | `/blogs/{id}` | – | dito |
+| GET | `/blogs/{id}/comments` | – | Kommentare sind Teil des öffentlichen Beitrags. |
+| POST | `/blogs/{id}/comments` | `reader` | Schreiben braucht eine zurechenbare Identität, sonst ist die API ein Spam-Ziel. |
+| POST | `/blogs` | `author` | Inhalte erstellen ist eine redaktionelle Tätigkeit. |
+| PUT | `/blogs/{id}` | `author` | dito |
+| POST | `/blogs/validate` | `author` | Hilfsendpunkt für das Autoren-Formular, kein öffentlicher Nutzen. |
+| DELETE | `/blogs/{id}` | `admin` | Löschen ist unwiderruflich und kaskadiert auf die Kommentare. |
+
+### Bekannte Lücken dieses Konzepts
+
+- **Keine Eigentümerschaft.** Jeder `author` darf jeden Blog ändern, nicht nur
+  die eigenen. Dafür fehlt dem Modell ein Autor-Feld am Blog. Das ist genau
+  OWASP API1 aus dem Abschnitt oben und bleibt offen, bis `Blog` weiß, wer ihn
+  geschrieben hat.
+- **Kein Veröffentlichungsstatus.** „Veröffentlichte Blogs sind öffentlich"
+  stimmt heute trivial, weil es keine Entwürfe gibt. Mit einem `draft`-Status
+  müsste GET zwischen öffentlich und `author` unterscheiden.
+- **Der `X-Admin-Token` verschwindet.** Er war ein Lernkonstrukt für
+  `@HeaderParam` und wird durch `@RolesAllowed("admin")` ersetzt.
+
+## Keycloak lokal starten
+
+Stellt die Rollen und Test-Benutzer bereit, gegen die das Backend später Tokens
+prüft.
+
+```bash
+cd code-with-quarkus
+docker compose up -d
+```
+
+Keycloak läuft dann auf <http://localhost:8180> (Port 8180, damit Quarkus die
+8080 behält). Admin-Konsole: `admin` / `admin`.
+
+Der Realm `blog` wird beim Start **automatisch** aus
+`keycloak/realm-blog.json` importiert — keine Konfiguration per Hand. Da der
+Container mit `start-dev` im Speicher läuft, ist nach einem Neustart wieder
+genau der Stand aus der Datei aktiv. Wer etwas ändern will, ändert die Datei,
+nicht die Admin-Konsole.
+
+### Test-Benutzer
+
+| Benutzer | Passwort | Rollen |
+|---|---|---|
+| `reader1` | `reader1` | `reader` |
+| `author1` | `author1` | `reader`, `author` |
+| `admin1` | `admin1` | `reader`, `author`, `admin` |
+
+Client: `blog-api`, public, mit aktivierten Direct Access Grants — deshalb
+braucht der Token-Abruf kein Client-Secret. Nur für die Entwicklung gedacht;
+produktiv holt ein Frontend das Token über den Authorization-Code-Flow.
+
+### Access-Token abholen
+
+```bash
+http --form POST :8180/realms/blog/protocol/openid-connect/token \
+  grant_type=password client_id=blog-api username=author1 password=author1
+```
+
+Das `access_token` aus der Antwort auf <https://jwt.io> einfügen. Im Payload
+muss die Rolle unter `realm_access.roles` stehen:
+
+```json
+"realm_access": {
+  "roles": ["author", "reader"]
+}
+```
+
+So sieht es für `author1` aus (nachgeprüft). `reader1` hat nur `reader`,
+`admin1` hat alle drei.
+
+Ohne jwt.io geht es auch im Terminal — ein JWT-Payload ist nur base64url:
+
+```bash
+TOKEN=$(http --form POST :8180/realms/blog/protocol/openid-connect/token \
+  grant_type=password client_id=blog-api username=author1 password=author1 \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+
+echo "$TOKEN" | cut -d. -f2 | python3 -c "
+import sys, base64, json
+p = sys.stdin.read().strip()
+print(json.dumps(json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4))), indent=2))
+" | grep -A6 realm_access
+```
+
+Das Auffüllen mit `=` ist nötig: JWTs verwenden base64url **ohne** Padding, ein
+schlichtes `base64 -d` bricht daran ab.
+
+Später wird das Token als `Authorization: Bearer $TOKEN` an die API geschickt.
+
 ## Tests
 
 56 Tests, Coverage 86,5 % Zeilen / 84,4 % Zweige.

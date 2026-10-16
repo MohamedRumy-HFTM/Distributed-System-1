@@ -1,0 +1,19 @@
+# Keycloak fuer die lokale Entwicklung.
+#
+# Port 8180, damit Quarkus die 8080 behaelt. start-dev haelt alles im Speicher:
+# bei jedem Start wird der Realm aus keycloak/realm-blog.json frisch importiert,
+# Aenderungen in der Admin-Konsole sind danach wieder weg. Genau so ist das
+# Setup reproduzierbar - die Datei ist die Wahrheit, nicht der Container.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: blog-keycloak
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./keycloak/realm-blog.json:/opt/keycloak/data/import/realm-blog.json:ro

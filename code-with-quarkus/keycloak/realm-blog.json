@@ -1,0 +1,59 @@
+{
+  "realm": "blog",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "reader", "description": "Darf lesen und kommentieren." },
+      { "name": "author", "description": "Darf Blogs anlegen und aendern." },
+      { "name": "admin", "description": "Darf zusaetzlich loeschen." }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "blog-api",
+      "name": "Blog API",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "defaultClientScopes": ["web-origins", "roles", "profile", "email"]
+    }
+  ],
+  "users": [
+    {
+      "username": "reader1",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Rita",
+      "lastName": "Reader",
+      "email": "reader1@example.test",
+      "credentials": [{ "type": "password", "value": "reader1", "temporary": false }],
+      "realmRoles": ["reader"]
+    },
+    {
+      "username": "author1",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Anna",
+      "lastName": "Author",
+      "email": "author1@example.test",
+      "credentials": [{ "type": "password", "value": "author1", "temporary": false }],
+      "realmRoles": ["reader", "author"]
+    },
+    {
+      "username": "admin1",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Adam",
+      "lastName": "Admin",
+      "email": "admin1@example.test",
+      "credentials": [{ "type": "password", "value": "admin1", "temporary": false }],
+      "realmRoles": ["reader", "author", "admin"]
+    }
+  ]
+}
