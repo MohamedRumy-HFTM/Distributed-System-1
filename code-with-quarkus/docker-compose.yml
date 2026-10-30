@@ -16,4 +16,4 @@ services:
     ports:
       - "8180:8080"
     volumes:
-      - ./keycloak/realm-blog.json:/opt/keycloak/data/import/realm-blog.json:ro
+      - ./src/main/resources/keycloak/realm-blog.json:/opt/keycloak/data/import/realm-blog.json:ro

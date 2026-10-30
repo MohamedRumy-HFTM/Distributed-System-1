@@ -7,7 +7,6 @@ import org.acme.control.BlogService;
 import org.acme.control.PagedResult;
 import org.acme.entity.Blog;
 import org.acme.entity.Comment;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.ExampleObject;
@@ -19,6 +18,9 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.jboss.resteasy.reactive.RestPath;
 
+import io.quarkus.security.identity.SecurityIdentity;
+import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.ConstraintViolation;
@@ -28,7 +30,6 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
-import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
@@ -49,11 +50,15 @@ import jakarta.ws.rs.core.UriInfo;
 @Tag(name = "Blogs", description = "Blogeintraege anlegen, lesen, aendern und loeschen")
 public class BlogResource {
 
-    /** Name des Headers, der die Berechtigung fuer loeschende Zugriffe traegt. */
-    public static final String ADMIN_TOKEN_HEADER = "X-Admin-Token";
-
     @Inject
     BlogService blogService;
+
+    /**
+     * Die angemeldete Identitaet. Liefert den Benutzernamen fuer die
+     * Eigentuemer-Pruefung und die Rollen aus realm_access.roles des Tokens.
+     */
+    @Inject
+    SecurityIdentity identity;
 
     /**
      * Wird fuer den Pruef-Endpunkt gebraucht: dort soll die Validierung ein
@@ -63,15 +68,8 @@ public class BlogResource {
     @Inject
     Validator validator;
 
-    /**
-     * LERNKONSTRUKT, keine echte Absicherung: ein fest konfiguriertes Token im
-     * Klartext ersetzt keine Authentifizierung. Es dient hier nur dazu,
-     * @HeaderParam zusammen mit den Statuscodes 401 und 403 zu zeigen.
-     */
-    @ConfigProperty(name = "blog.admin-token", defaultValue = "local-dev-token")
-    String adminToken;
-
     @GET
+    @PermitAll
     @Operation(summary = "Blogs auflisten",
             description = "Liefert eine Seite von Blogeintraegen zusammen mit der Gesamtzahl der Treffer. "
                     + "Unterstuetzt Volltextsuche ueber Titel und Inhalt, Sortierung und Paging.")
@@ -108,6 +106,7 @@ public class BlogResource {
      */
     @GET
     @Path("{id}")
+    @PermitAll
     @Operation(summary = "Einen Blog lesen", description = "Liefert einen einzelnen Blogeintrag anhand seiner Id.")
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Blog gefunden"),
@@ -121,6 +120,7 @@ public class BlogResource {
     }
 
     @POST
+    @RolesAllowed("author")
     @Operation(summary = "Neuen Blog anlegen",
             description = "Legt einen Blogeintrag an. Die Id vergibt der Server, sie darf im Request-Body fehlen. "
                     + "Die Antwort nennt im Location-Header die URI der neuen Ressource.")
@@ -142,7 +142,9 @@ public class BlogResource {
         if (request == null) {
             throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
-        Blog blog = new Blog(request.title(), request.content());
+        // Der Autor kommt aus dem Token, nicht aus dem Body - ein Client kann
+        // sich keinen fremden Autor zuschreiben.
+        Blog blog = new Blog(request.title(), request.content(), identity.getPrincipal().getName());
         blogService.addBlog(blog);
 
         // Aus /blogs wird /blogs/{neueId} - der Client muss die Id nicht erraten.
@@ -159,6 +161,7 @@ public class BlogResource {
      */
     @POST
     @Path("validate")
+    @RolesAllowed("author")
     @Operation(summary = "Blog pruefen, ohne zu speichern",
             description = "Antwortet mit 204, wenn der Blog gueltig waere, sonst mit 400 und der Liste der verletzten Regeln.")
     @APIResponses({
@@ -182,42 +185,51 @@ public class BlogResource {
 
     @PUT
     @Path("{id}")
-    @Operation(summary = "Blog aendern", description = "Ersetzt Titel und Inhalt eines bestehenden Blogeintrags.")
+    @RolesAllowed({ "author", "admin" })
+    @Operation(summary = "Blog aendern",
+            description = "Ersetzt Titel und Inhalt. Ein author darf nur eigene Blogs aendern, ein admin jeden.")
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Blog wurde aktualisiert"),
             @APIResponse(responseCode = "400", description = "Eingabe verletzt eine Regel",
                     content = @Content(mediaType = MediaType.APPLICATION_JSON,
                             schema = @Schema(implementation = ValidationErrorResponse.class))),
+            @APIResponse(responseCode = "401", description = "Kein oder ungueltiges Token"),
+            @APIResponse(responseCode = "403", description = "Blog gehoert einem anderen Autor"),
             @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
     public BlogResponse update(@PathParam("id") Long id, @Valid BlogRequest request) {
         if (request == null) {
             throw new ResponseException(Status.BAD_REQUEST, "Request-Body fehlt");
         }
-        Blog updated = blogService.updateBlog(id, new Blog(request.title(), request.content()));
-        if (updated == null) {
+        // Erst laden, dann die Eigentuemerschaft pruefen - sonst wuerde ein
+        // fremder Autor die Aenderung schreiben, bevor jemand hinsieht.
+        Blog existing = blogService.getBlog(id);
+        if (existing == null) {
             throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
-        return BlogResponse.from(updated);
+        requireOwnerOrAdmin(existing);
+
+        return BlogResponse.from(blogService.updateBlog(id, new Blog(request.title(), request.content())));
     }
 
     @DELETE
     @Path("{id}")
+    @RolesAllowed({ "author", "admin" })
     @Operation(summary = "Blog loeschen",
-            description = "Loescht einen Blogeintrag samt seiner Kommentare. Erfordert den Header " + ADMIN_TOKEN_HEADER + ".")
+            description = "Loescht einen Blogeintrag samt seiner Kommentare. "
+                    + "Ein author darf nur eigene Blogs loeschen, ein admin jeden.")
     @APIResponses({
             @APIResponse(responseCode = "204", description = "Blog wurde geloescht"),
-            @APIResponse(responseCode = "401", description = "Header " + ADMIN_TOKEN_HEADER + " fehlt"),
-            @APIResponse(responseCode = "403", description = "Token ist ungueltig"),
+            @APIResponse(responseCode = "401", description = "Kein oder ungueltiges Token"),
+            @APIResponse(responseCode = "403", description = "Blog gehoert einem anderen Autor"),
             @APIResponse(responseCode = "404", description = "Kein Blog mit dieser Id") })
-    public Response delete(
-            @PathParam("id") Long id,
-            @Parameter(description = "Berechtigungstoken fuer loeschende Zugriffe")
-            @HeaderParam(ADMIN_TOKEN_HEADER) String token) {
-
-        requireAdminToken(token);
-        if (!blogService.deleteBlog(id)) {
+    public Response delete(@PathParam("id") Long id) {
+        Blog existing = blogService.getBlog(id);
+        if (existing == null) {
             throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
+        requireOwnerOrAdmin(existing);
+
+        blogService.deleteBlog(id);
         return Response.noContent().build();
     }
 
@@ -229,6 +241,7 @@ public class BlogResource {
      */
     @GET
     @Path("{id}/comments")
+    @PermitAll
     @Operation(summary = "Kommentare eines Blogs auflisten", description = "Liefert alle Kommentare zum angegebenen Blogeintrag.")
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Liste der Kommentare"),
@@ -240,7 +253,9 @@ public class BlogResource {
 
     @POST
     @Path("{id}/comments")
-    @Operation(summary = "Kommentar hinzufuegen", description = "Haengt einen Kommentar an einen bestehenden Blogeintrag.")
+    @RolesAllowed("reader")
+    @Operation(summary = "Kommentar hinzufuegen",
+            description = "Haengt einen Kommentar an einen bestehenden Blogeintrag. Erfordert ein Login.")
     @RequestBody(content = @Content(
             mediaType = MediaType.APPLICATION_JSON,
             schema = @Schema(implementation = Comment.class),
@@ -272,12 +287,19 @@ public class BlogResource {
         }
     }
 
-    private void requireAdminToken(String token) {
-        if (token == null || token.isBlank()) {
-            throw new ResponseException(Status.UNAUTHORIZED, "Header " + ADMIN_TOKEN_HEADER + " fehlt");
+    /**
+     * Eigentuemer-Regel: ein `author` darf nur die eigenen Blogs anfassen, ein
+     * `admin` jeden. Der Vergleich laeuft ueber den Benutzernamen aus dem Token
+     * gegen das Autor-Feld des Blogs.
+     */
+    private void requireOwnerOrAdmin(Blog blog) {
+        if (identity.hasRole("admin")) {
+            return;
         }
-        if (!adminToken.equals(token)) {
-            throw new ResponseException(Status.FORBIDDEN, "Ungueltiges Token im Header " + ADMIN_TOKEN_HEADER);
+        String currentUser = identity.getPrincipal().getName();
+        if (!currentUser.equals(blog.getAuthor())) {
+            throw new ResponseException(Status.FORBIDDEN,
+                    "Blog " + blog.getId() + " gehoert " + blog.getAuthor() + ", nicht " + currentUser);
         }
     }
 

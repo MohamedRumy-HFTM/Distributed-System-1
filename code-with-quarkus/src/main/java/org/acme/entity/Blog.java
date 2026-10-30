@@ -41,6 +41,15 @@ public class Blog {
     @NotBlank(message = "Inhalt darf nicht leer sein.")
     private String content;
 
+    /**
+     * Benutzername der Person, die den Blog angelegt hat - die Grundlage fuer
+     * "nur eigene Blogs bearbeiten". Bewusst OHNE @NotBlank: der Wert kommt vom
+     * Server aus dem Token, nicht aus dem Request-Body. Eingabe-Validierung
+     * waere hier die falsche Schicht.
+     */
+    @Schema(description = "Benutzername des Autors. Setzt der Server aus dem Token.", examples = { "author1" })
+    private String author;
+
     @Schema(hidden = true)
     @JsonbTransient
     @OneToMany(mappedBy = "blog", cascade = CascadeType.ALL, orphanRemoval = true)
@@ -52,6 +61,11 @@ public class Blog {
     public Blog(String title, String content) {
         this.title = title;
         this.content = content;
+    }
+
+    public Blog(String title, String content, String author) {
+        this(title, content);
+        this.author = author;
     }
 
     /**
@@ -82,6 +96,10 @@ public class Blog {
 
     public void setContent(String content) {
         this.content = content;
+    }
+
+    public String getAuthor() {
+        return author;
     }
 
     public List<Comment> getComments() {

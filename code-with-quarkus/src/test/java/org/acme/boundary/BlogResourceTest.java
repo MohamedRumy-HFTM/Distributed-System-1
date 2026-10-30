@@ -10,14 +10,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
+import io.quarkus.test.security.TestSecurity;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.ExtractableResponse;
 
+/**
+ * Fachliche Tests der Endpunkte. Laeuft durchgehend als author1, damit hier die
+ * Funktion im Mittelpunkt steht und nicht die Berechtigung - die prueft
+ * {@link BlogAuthTest} gezielt.
+ *
+ * @TestSecurity setzt die SecurityIdentity direkt, ohne echtes Token und ohne
+ * Keycloak. Deshalb ist OIDC im Test-Profil abgeschaltet.
+ */
 @QuarkusTest
+@TestSecurity(user = "author1", roles = { "reader", "author" })
 class BlogResourceTest {
-
-    private static final String TOKEN_HEADER = "X-Admin-Token";
-    private static final String VALID_TOKEN = "local-dev-token";
 
     private ExtractableResponse<?> createBlog(String title, String content) {
         String requestBody = """
@@ -270,18 +277,18 @@ class BlogResourceTest {
     }
 
     @Test
-    void deletingBlogRequiresToken() {
+    void deletingOwnBlogRemovesIt() {
         Integer id = createBlog("Temp Blog", "short lived").path("id");
 
-        // Ohne Header -> 401
-        given().when().delete("/blogs/" + id).then().statusCode(401);
-
-        // Falsches Token -> 403
-        given().header(TOKEN_HEADER, "wrong").when().delete("/blogs/" + id).then().statusCode(403);
-
-        // Gueltiges Token -> 204, danach ist der Blog weg
-        given().header(TOKEN_HEADER, VALID_TOKEN).when().delete("/blogs/" + id).then().statusCode(204);
+        given().when().delete("/blogs/" + id).then().statusCode(204);
         given().when().get("/blogs/" + id).then().statusCode(404);
+    }
+
+    @Test
+    void createdBlogCarriesTheLoggedInUserAsAuthor() {
+        // Der Autor kommt aus der Identitaet, nicht aus dem Request-Body.
+        assertEquals("author1",
+                createBlog("Autor aus dem Token", "nicht aus dem Body").path("author"));
     }
 
     // --- Pruefen ohne Speichern ----------------------------------------------

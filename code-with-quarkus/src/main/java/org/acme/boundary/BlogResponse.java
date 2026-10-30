@@ -11,9 +11,9 @@ import org.eclipse.microprofile.openapi.annotations.media.Schema;
  * braucht, holt sie unter /blogs/{id}/comments.
  */
 @Schema(name = "BlogResponse", description = "Ein Blog, wie die API ihn ausliefert.")
-public record BlogResponse(Long id, String title, String content) {
+public record BlogResponse(Long id, String title, String content, String author) {
 
     public static BlogResponse from(Blog blog) {
-        return new BlogResponse(blog.getId(), blog.getTitle(), blog.getContent());
+        return new BlogResponse(blog.getId(), blog.getTitle(), blog.getContent(), blog.getAuthor());
     }
 }

@@ -29,11 +29,13 @@ public class DataInitialization {
             return;
         }
 
-        Blog first = new Blog("First Blog", "This is my first blog");
+        // Zwei verschiedene Autoren, damit die Eigentuemer-Regel ueberhaupt
+        // pruefbar ist: author1 darf den zweiten Blog nicht aendern.
+        Blog first = new Blog("First Blog", "This is my first blog", "author1");
         first.addComment(new Comment("Alice", "Great first post!"));
         first.addComment(new Comment("Bob", "Looking forward to more."));
 
-        Blog second = new Blog("Second Blog", "This is my second blog");
+        Blog second = new Blog("Second Blog", "This is my second blog", "admin1");
         second.addComment(new Comment("Carol", "Nice write-up."));
 
         blogRepository.persist(first, second);

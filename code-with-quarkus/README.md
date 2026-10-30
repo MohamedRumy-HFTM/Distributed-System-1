@@ -144,9 +144,8 @@ HTTPS-Terminierung.
 
 ## Berechtigungskonzept
 
-Noch **nicht implementiert** — das folgt in der nächsten Einheit mit
-`@RolesAllowed` und der OIDC-Extension. Dies ist die Zielvorgabe, gegen die dann
-umgesetzt wird.
+**Implementiert** mit `quarkus-oidc` und `@RolesAllowed`/`@PermitAll` in
+`BlogResource`, abgesichert durch `BlogAuthTest`.
 
 ### Rollen
 
@@ -165,47 +164,95 @@ Mehr Rollen wären für diese Domäne erfundene Komplexität. Ein eigener
 
 ### Zugriffsregeln je Endpunkt
 
-| Methode | Pfad | Erforderlich | Begründung |
-|---|---|---|---|
-| GET | `/blogs` | – | Ein Blog ist zum Lesen da. Öffentlich ohne Login. |
-| GET | `/blogs/{id}` | – | dito |
-| GET | `/blogs/{id}/comments` | – | Kommentare sind Teil des öffentlichen Beitrags. |
-| POST | `/blogs/{id}/comments` | `reader` | Schreiben braucht eine zurechenbare Identität, sonst ist die API ein Spam-Ziel. |
-| POST | `/blogs` | `author` | Inhalte erstellen ist eine redaktionelle Tätigkeit. |
-| PUT | `/blogs/{id}` | `author` | dito |
-| POST | `/blogs/validate` | `author` | Hilfsendpunkt für das Autoren-Formular, kein öffentlicher Nutzen. |
-| DELETE | `/blogs/{id}` | `admin` | Löschen ist unwiderruflich und kaskadiert auf die Kommentare. |
+| Methode | Pfad | Annotation | Zusätzlich | Begründung |
+|---|---|---|---|---|
+| GET | `/blogs` | `@PermitAll` | – | Ein Blog ist zum Lesen da. |
+| GET | `/blogs/{id}` | `@PermitAll` | – | dito |
+| GET | `/blogs/{id}/comments` | `@PermitAll` | – | Kommentare sind Teil des öffentlichen Beitrags. |
+| POST | `/blogs/{id}/comments` | `@RolesAllowed("reader")` | – | Schreiben braucht eine zurechenbare Identität, sonst ist die API ein Spam-Ziel. |
+| POST | `/blogs` | `@RolesAllowed("author")` | Autor = Token-Benutzer | Inhalte erstellen ist redaktionell. |
+| POST | `/blogs/validate` | `@RolesAllowed("author")` | – | Hilfsendpunkt für das Autoren-Formular. |
+| PUT | `/blogs/{id}` | `@RolesAllowed({"author","admin"})` | **Eigentümer oder admin** | Fremde Beiträge ändert man nicht. |
+| DELETE | `/blogs/{id}` | `@RolesAllowed({"author","admin"})` | **Eigentümer oder admin** | Löschen ist unwiderruflich und kaskadiert auf die Kommentare. |
+
+### Benutzeridentifikation: nur eigene Blogs
+
+Der Anwendungsfall, für den der angemeldete Benutzer konkret bekannt sein muss.
+
+- **Beim Anlegen** setzt der Server das Feld `Blog.author` aus
+  `SecurityIdentity.getPrincipal().getName()`. Der Wert steht **nicht** in
+  `BlogRequest` — ein Client kann sich keinen fremden Autor zuschreiben.
+- **Beim Ändern und Löschen** vergleicht `requireOwnerOrAdmin(blog)` den
+  Benutzernamen aus dem Token mit `blog.getAuthor()`. Ein `admin` umgeht die
+  Prüfung, ein `author` bekommt `403` mit der Meldung, wem der Blog gehört.
+- **Reihenfolge ist Absicht:** erst `404` prüfen, dann die Eigentümerschaft.
+  Sonst verriete ein `403` einem Fremden, dass eine Id existiert.
+
+Die Startdaten legen deshalb zwei Blogs mit **verschiedenen** Autoren an
+(`author1` und `admin1`) — sonst wäre die Regel nicht prüfbar.
+
+Gegenüber dem Konzept der letzten Einheit ist das eine **bewusste Verschärfung
+und gleichzeitig Lockerung**: Löschen ist nicht mehr `admin`-exklusiv, dafür
+darf ein `author` nur an die eigenen Beiträge. Das setzt die Aufgabenstellung
+„nur seine eigenen Blogs bearbeiten oder löschen" genauer um als die alte
+Rollen-Regel.
 
 ### Bekannte Lücken dieses Konzepts
 
-- **Keine Eigentümerschaft.** Jeder `author` darf jeden Blog ändern, nicht nur
-  die eigenen. Dafür fehlt dem Modell ein Autor-Feld am Blog. Das ist genau
-  OWASP API1 aus dem Abschnitt oben und bleibt offen, bis `Blog` weiß, wer ihn
-  geschrieben hat.
 - **Kein Veröffentlichungsstatus.** „Veröffentlichte Blogs sind öffentlich"
   stimmt heute trivial, weil es keine Entwürfe gibt. Mit einem `draft`-Status
   müsste GET zwischen öffentlich und `author` unterscheiden.
-- **Der `X-Admin-Token` verschwindet.** Er war ein Lernkonstrukt für
-  `@HeaderParam` und wird durch `@RolesAllowed("admin")` ersetzt.
+- **Kommentare haben keinen Eigentümer.** Das Feld `Comment.author` ist ein
+  freier Text aus dem Request, keine geprüfte Identität. Wer Kommentare
+  löschbar machen will, muss ihn erst wie bei `Blog` aus dem Token setzen.
+- **Der `X-Admin-Token` ist weg.** Er war ein Lernkonstrukt für `@HeaderParam`
+  und ist durch echte Rollenprüfung ersetzt.
 
-## Keycloak lokal starten
+## Auth-Setup austesten
 
-Stellt die Rollen und Test-Benutzer bereit, gegen die das Backend später Tokens
-prüft.
+Es gibt **zwei Wege**, Keycloak anzubinden. Beide nutzen dieselbe
+Realm-Definition `src/main/resources/keycloak/realm-blog.json` — eine Quelle,
+kein Abgleich per Hand.
+
+### Variante A: Dev Services (Standard, nichts zu starten)
 
 ```bash
-cd code-with-quarkus
-docker compose up -d
+export JAVA_HOME=$PWD/.jdks/jdk-25.0.3+9/Contents/Home
+./mvnw quarkus:dev
 ```
 
-Keycloak läuft dann auf <http://localhost:8180> (Port 8180, damit Quarkus die
-8080 behält). Admin-Konsole: `admin` / `admin`.
+Quarkus startet selbst einen Keycloak-Container und importiert den Realm.
+Bequem zum Entwickeln, aber nicht wiederverwendbar — mit dem Prozess ist der
+Container weg.
 
-Der Realm `blog` wird beim Start **automatisch** aus
-`keycloak/realm-blog.json` importiert — keine Konfiguration per Hand. Da der
-Container mit `start-dev` im Speicher läuft, ist nach einem Neustart wieder
-genau der Stand aus der Datei aktiv. Wer etwas ändern will, ändert die Datei,
-nicht die Admin-Konsole.
+Der Port wechselt bei jedem Lauf. Zu finden ist er in der Dev UI
+(<http://localhost:8080/q/dev-ui>, Karte *OpenID Connect*) oder im Terminal:
+
+```bash
+docker ps --format '{{.Image}} {{.Ports}}' | grep keycloak
+```
+
+Im Startlog steht die URL **nicht** — dort erscheint nur, dass der Container
+hochgefahren ist.
+
+Nötige Konfiguration: nur `quarkus.oidc.client-id` und
+`quarkus.keycloak.devservices.realm-path`. **Kein** `auth-server-url` — sobald
+der gesetzt ist, schalten die Dev Services ab.
+
+### Variante B: eigener Container (fester Port, überlebt Neustarts)
+
+```bash
+docker compose up -d                                   # Keycloak auf :8180
+./mvnw quarkus:dev -Dquarkus.profile=keycloak          # Backend dagegen
+```
+
+Das Profil `keycloak` setzt `auth-server-url` auf
+`http://localhost:8180/realms/blog` und schaltet die Dev Services ab. Admin-Konsole:
+<http://localhost:8180>, `admin` / `admin`.
+
+Da der Container mit `start-dev` im Speicher läuft, ist nach einem Neustart
+wieder genau der Stand aus der Realm-Datei aktiv. Wer etwas ändern will, ändert
+die Datei, nicht die Admin-Konsole.
 
 ### Test-Benutzer
 
@@ -255,14 +302,51 @@ print(json.dumps(json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4))), 
 Das Auffüllen mit `=` ist nötig: JWTs verwenden base64url **ohne** Padding, ein
 schlichtes `base64 -d` bricht daran ab.
 
-Später wird das Token als `Authorization: Bearer $TOKEN` an die API geschickt.
+### Geschützte Endpunkte mit HTTPie testen
+
+`$TOKEN` wie oben holen, dann:
+
+```bash
+# Öffentlich - geht ohne Token
+http :8080/blogs
+
+# Ohne Token schreiben -> 401
+http --ignore-stdin POST :8080/blogs title="Ohne Token" content="geht nicht"
+
+# Als author1 anlegen -> 201, author kommt aus dem Token
+http --ignore-stdin POST :8080/blogs "Authorization:Bearer $TOKEN" \
+  title="Mit Token angelegt" content="Hallo Welt"
+
+# Eigenen Blog ändern -> 200
+http --ignore-stdin PUT :8080/blogs/1 "Authorization:Bearer $TOKEN" \
+  title="Eigener Blog geaendert" content="darf ich"
+
+# Fremden Blog ändern -> 403 (Blog 2 gehört admin1)
+http --ignore-stdin PUT :8080/blogs/2 "Authorization:Bearer $TOKEN" \
+  title="Fremder Blog" content="darf ich nicht"
+```
+
+Mit einem `reader1`-Token schlägt `POST /blogs` mit **403** fehl (angemeldet,
+aber falsche Rolle) — im Unterschied zu **401** ohne Token. Mit einem
+`admin1`-Token geht auch der fremde Blog.
+
+### Geschützte Endpunkte in der Swagger UI testen
+
+1. `./mvnw quarkus:dev` starten, <http://localhost:8080/q/swagger-ui> öffnen.
+2. Token wie oben per HTTPie holen und kopieren.
+3. Oben rechts auf **Authorize**, bei `bearerAuth` `Bearer <TOKEN>` eintragen.
+4. Jetzt liefern `POST`/`PUT`/`DELETE` statt `401` die echten Antworten. Ohne
+   den Schritt lassen sich nur die `@PermitAll`-Endpunkte ausprobieren.
 
 ## Tests
 
-56 Tests, Coverage 86,5 % Zeilen / 84,4 % Zweige.
+68 Tests, Coverage 87,6 % Zeilen / 87,1 % Zweige. Laufen **ohne Keycloak**:
+`%test.quarkus.oidc.enabled=false`, die Identität kommt aus `@TestSecurity`.
+Damit kostet der Testlauf keinen zusätzlichen Container.
 
 | Klasse | Prüft |
 |---|---|
+| `BlogAuthTest` | Berechtigungskonzept und Eigentümer-Regel je Rolle |
 | `BlogSystemTest` | API von außen, geordneter Ablauf, Text Blocks + JSON-P |
 | `BlogResourceTest` | Endpunkte einzeln, inkl. Paging, Suche, Sortierung, Validierung |
 | `OpenApiTest` | das generierte OpenAPI-Dokument |

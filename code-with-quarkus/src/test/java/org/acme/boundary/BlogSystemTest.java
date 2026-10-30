@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import io.restassured.RestAssured;
 import jakarta.json.Json;
 import jakarta.json.JsonArray;
@@ -35,10 +36,8 @@ import jakarta.ws.rs.core.Response.Status;
  */
 @QuarkusTest
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@TestSecurity(user = "author1", roles = { "reader", "author" })
 class BlogSystemTest {
-
-    private static final String TOKEN_HEADER = "X-Admin-Token";
-    private static final String VALID_TOKEN = "local-dev-token";
 
     private static int totalCountBefore;
     private static String createdLocation;
@@ -215,18 +214,10 @@ class BlogSystemTest {
 
     @Test
     @Order(8)
-    void schrittAchtLoeschenBrauchtBerechtigung() {
-        // Ohne Header abgewiesen ...
+    void schrittAchtEigenenBlogLoeschen() {
+        // author1 hat den Blog in Schritt 2 angelegt, darf ihn also loeschen -
+        // samt des Kommentars aus Schritt 5.
         RestAssured
-                .when()
-                    .delete(createdLocation)
-                .then()
-                    .statusCode(Status.UNAUTHORIZED.getStatusCode());
-
-        // ... mit gueltigem Token entfernt, inklusive des Kommentars.
-        RestAssured
-                .given()
-                    .header(TOKEN_HEADER, VALID_TOKEN)
                 .when()
                     .delete(createdLocation)
                 .then()

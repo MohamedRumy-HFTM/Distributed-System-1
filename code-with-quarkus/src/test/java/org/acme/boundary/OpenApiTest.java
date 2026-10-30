@@ -5,6 +5,7 @@ import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 
 import org.junit.jupiter.api.Test;
 
@@ -66,13 +67,35 @@ class OpenApiTest {
     }
 
     @Test
-    void openApiDocumentListsTheHeaderParameter() {
+    void openApiDocumentDeclaresBearerAuth() {
         given()
               .accept("application/json")
             .when().get("/q/openapi")
             .then()
                .statusCode(200)
-               .body("paths.'/blogs/{id}'.delete.parameters.name", hasItem("X-Admin-Token"));
+               .body("components.securitySchemes.bearerAuth.type", is("http"))
+               .body("components.securitySchemes.bearerAuth.scheme", is("bearer"))
+               .body("components.securitySchemes.bearerAuth.bearerFormat", is("JWT"));
+    }
+
+    /**
+     * Die benoetigten Rollen stehen pro Operation im Dokument. Damit ist das
+     * Berechtigungskonzept nicht nur im Code und in der README beschrieben,
+     * sondern maschinenlesbar - und diese Zusicherung bricht, wenn jemand eine
+     * Annotation entfernt.
+     */
+    @Test
+    void openApiDocumentStatesRequiredRolesPerOperation() {
+        given()
+              .accept("application/json")
+            .when().get("/q/openapi")
+            .then()
+               .statusCode(200)
+               .body("paths.'/blogs'.post.security[0].bearerAuth", hasItem("author"))
+               .body("paths.'/blogs/{id}'.put.security[0].bearerAuth", hasItems("author", "admin"))
+               .body("paths.'/blogs/{id}'.delete.security[0].bearerAuth", hasItems("author", "admin"))
+               .body("paths.'/blogs/{id}/comments'.post.security[0].bearerAuth", hasItem("reader"))
+               .body("paths.'/blogs'.get.security", nullValue());
     }
 
     @Test
