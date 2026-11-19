@@ -1,19 +1,63 @@
-# Keycloak fuer die lokale Entwicklung.
+# Umsysteme und Anwendung fuer die lokale Entwicklung und den Container-Betrieb.
 #
-# Port 8180, damit Quarkus die 8080 behaelt. start-dev haelt alles im Speicher:
-# bei jedem Start wird der Realm aus keycloak/realm-blog.json frisch importiert,
-# Aenderungen in der Admin-Konsole sind danach wieder weg. Genau so ist das
-# Setup reproduzierbar - die Datei ist die Wahrheit, nicht der Container.
+#   docker compose up -d keycloak        nur Keycloak (fuer ./mvnw quarkus:dev -Dquarkus.profile=keycloak)
+#   docker compose --profile full up -d  komplettes System: Keycloak + MySQL + das Image
+#
+# Geheimnisse kommen aus .env (siehe .env.example), nicht aus dieser Datei.
 services:
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: blog-keycloak
     command: start-dev --import-realm
     environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HEALTH_ENABLED: "true"
+      # Der Issuer im Token wird fest auf localhost:8180 genagelt - das ist die
+      # Adresse, unter der ein Client (HTTPie, Browser) das Token abholt.
+      KC_HOSTNAME: http://localhost:8180
+      # ... waehrend die Anwendung im Compose-Netz Keycloak unter keycloak:8080
+      # erreicht. Dynamische Backchannel-URLs loesen genau diesen Widerspruch:
+      # der Issuer bleibt stabil, JWKS wird unter der tatsaechlich benutzten
+      # Adresse ausgeliefert.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     ports:
       - "8180:8080"
     volumes:
       - ./src/main/resources/keycloak/realm-blog.json:/opt/keycloak/data/import/realm-blog.json:ro
+
+  mysql:
+    image: mysql:9.5
+    container_name: blog-mysql
+    environment:
+      MYSQL_DATABASE: quarkus
+      MYSQL_USER: ${BLOG_DB_USER:-quarkus}
+      MYSQL_PASSWORD: ${BLOG_DB_PASSWORD:-quarkus}
+      MYSQL_ROOT_PASSWORD: ${BLOG_DB_ROOT_PASSWORD:-root}
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${BLOG_DB_ROOT_PASSWORD:-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    profiles: ["full"]
+
+  blog-api:
+    image: ${BLOG_IMAGE:-ghcr.io/mohamedrumy-hftm/blog-api:latest}
+    container_name: blog-api
+    environment:
+      BLOG_DB_URL: jdbc:mysql://mysql:3306/quarkus
+      BLOG_DB_USER: ${BLOG_DB_USER:-quarkus}
+      BLOG_DB_PASSWORD: ${BLOG_DB_PASSWORD:-quarkus}
+      BLOG_OIDC_URL: http://keycloak:8080/realms/blog
+      BLOG_SEED_DATA: ${BLOG_SEED_DATA:-true}
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    profiles: ["full"]

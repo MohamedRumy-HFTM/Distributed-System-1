@@ -2,6 +2,7 @@ package org.acme.control;
 
 import org.acme.entity.Blog;
 import org.acme.entity.Comment;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import io.quarkus.logging.Log;
 import io.quarkus.runtime.StartupEvent;
@@ -17,12 +18,24 @@ public class DataInitialization {
     BlogRepository blogRepository;
 
     /**
+     * Eigene Konfigurationseigenschaft: im Container laesst sich das Anlegen der
+     * Beispieldaten ohne Neubau abschalten (BLOG_SEED_DATA=false).
+     */
+    @ConfigProperty(name = "blog.data-initialization.enabled", defaultValue = "true")
+    boolean enabled;
+
+    /**
      * Legt Beispieldaten an, aber nur wenn die Datenbank leer ist.
      * Diese Pruefung macht die Initialisierung idempotent: bei einem Redeploy
      * gegen eine bestehende Datenbank entstehen keine Duplikate.
      */
     @Transactional
     public void init(@Observes StartupEvent event) {
+        if (!enabled) {
+            Log.info("Data initialization disabled by configuration (blog.data-initialization.enabled=false)");
+            return;
+        }
+
         long existing = blogRepository.count();
         if (existing > 0) {
             Log.info("Data initialization skipped, " + existing + " blogs already present");

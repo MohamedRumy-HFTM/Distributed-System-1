@@ -208,6 +208,96 @@ Rollen-Regel.
 - **Der `X-Admin-Token` ist weg.** Er war ein Lernkonstrukt für `@HeaderParam`
   und ist durch echte Rollenprüfung ersetzt.
 
+## Als Container starten
+
+Das veröffentlichte Image liegt auf GitHub Packages:
+`ghcr.io/mohamedrumy-hftm/blog-api:latest`
+
+### Gesamtsystem mit einem Befehl
+
+```bash
+cd code-with-quarkus
+cp .env.example .env          # optional, nur für eigene Passwörter
+docker compose --profile full up -d
+```
+
+Damit laufen drei Container: **MySQL** (`:3306`), **Keycloak** (`:8180`, Realm
+wird importiert) und das **Backend** (`:8080`). Die App wartet, bis MySQL
+gesund ist. Startzeit des Backends: rund 1,6 s.
+
+```bash
+docker compose --profile full logs -f blog-api   # Logs verfolgen
+docker compose --profile full down -v            # alles abräumen
+```
+
+**Swagger UI gibt es im Container nicht** (`/q/swagger-ui` → 404): Quarkus
+registriert sie bewusst nur im Dev-Modus, eine interaktive API-Konsole ist auf
+einem Produktivsystem eine Angriffsfläche. Das OpenAPI-**Dokument** unter
+`/q/openapi` ist dagegen verfügbar. Zum Klicken in der Swagger UI
+`./mvnw quarkus:dev` nutzen, zum Testen des Images HTTPie (siehe unten).
+
+Nur die Umsysteme ohne Backend (für `./mvnw quarkus:dev -Dquarkus.profile=keycloak`):
+
+```bash
+docker compose up -d keycloak
+```
+
+### Konfiguration des Images
+
+Im gepackten Image laufen **keine Dev Services** — Datenbank und Keycloak
+müssen von außen kommen. Alles über Umgebungsvariablen, nichts im Image:
+
+| Variable | Default | Zweck |
+|---|---|---|
+| `BLOG_DB_URL` | `jdbc:mysql://localhost:3306/quarkus` | JDBC-URL |
+| `BLOG_DB_USER` / `BLOG_DB_PASSWORD` | `quarkus` / `quarkus` | DB-Zugang |
+| `BLOG_OIDC_URL` | `http://localhost:8180/realms/blog` | Keycloak-Realm |
+| `BLOG_SCHEMA_STRATEGY` | `drop-and-create` | Schema-Erzeugung |
+| `BLOG_SEED_DATA` | `true` | Beispieldaten anlegen |
+
+`drop-and-create` ist eine **Demo-Einstellung**, damit ein Prüfer ein frisches,
+funktionierendes System bekommt. Für echten Betrieb auf `none` setzen und das
+Schema per Migration verwalten.
+
+Geheimnisse gehören in `.env` (per `.gitignore` ausgeschlossen); eingecheckt ist
+nur `.env.example` mit Platzhaltern.
+
+### Die Issuer-Falle
+
+Ein Client holt das Token über `localhost:8180`, die App erreicht Keycloak im
+Compose-Netz aber nur unter `keycloak:8080`. Der Issuer im Token passt dann
+nicht zur Discovery-URL der App, und die Validierung schlägt fehl.
+
+Gelöst über zwei Keycloak-Einstellungen in `docker-compose.yml`:
+
+```yaml
+KC_HOSTNAME: http://localhost:8180        # Issuer fest auf die Client-Adresse
+KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"   # JWKS unter der benutzten Adresse
+```
+
+Der Issuer bleibt damit stabil, während die App die Signaturschlüssel über ihren
+eigenen Weg bekommt. Ein `quarkus.oidc.token.issuer`-Override ist nicht nötig.
+
+### Image selbst bauen
+
+```bash
+export JAVA_HOME=$PWD/.jdks/jdk-25.0.3+9/Contents/Home
+./mvnw package
+docker build -f src/main/docker/Dockerfile.jvm -t ghcr.io/mohamedrumy-hftm/blog-api:latest .
+```
+
+### Auf GitHub Packages veröffentlichen
+
+Erfordert ein Personal Access Token mit `write:packages`:
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u MohamedRumy-HFTM --password-stdin
+docker push ghcr.io/mohamedrumy-hftm/blog-api:latest
+```
+
+Danach das Paket auf **Public** stellen: GitHub → Profil → *Packages* →
+`blog-api` → *Package settings* → *Change visibility* → Public.
+
 ## Auth-Setup austesten
 
 Es gibt **zwei Wege**, Keycloak anzubinden. Beide nutzen dieselbe
@@ -337,6 +427,29 @@ aber falsche Rolle) — im Unterschied zu **401** ohne Token. Mit einem
 3. Oben rechts auf **Authorize**, bei `bearerAuth` `Bearer <TOKEN>` eintragen.
 4. Jetzt liefern `POST`/`PUT`/`DELETE` statt `401` die echten Antworten. Ohne
    den Schritt lassen sich nur die `@PermitAll`-Endpunkte ausprobieren.
+
+## Logging
+
+Durchgängig über `io.quarkus.logging.Log` — eine statische Fassade, die ohne
+eigene Logger-Instanz pro Klasse auskommt. Protokolliert wird in drei Kategorien:
+
+| Kategorie | Wo | Beispiel aus dem Containerlog |
+|---|---|---|
+| Systemzustand | `DataInitialization` | `Data initialization created 2 blogs` |
+| Geschäftsereignis | `BlogService` (was), `BlogResource` (wer) | `Adding blog Im Container angelegt` → `Blog 3 von author1 angelegt` |
+| Sicherheit | `BlogResource.requireOwnerOrAdmin` | `Zugriff verweigert: author1 wollte Blog 2 von admin1 aendern` |
+| Fehler | `ExceptionMappers` | `Constraint ausserhalb der REST-Grenze verletzt: …` |
+
+Zwei bewusste Entscheidungen:
+
+- **Nicht überall loggen.** Entities, DTOs und Repositories bleiben stumm — sie
+  haben nichts zu berichten, was die aufrufende Schicht nicht besser weiß.
+  „Durchgängig" heißt vollständige Abdeckung der *Ereignisse*, nicht der Klassen.
+- **Abgewiesene Zugriffe sind `WARN`.** Ein einzelnes `403` ist harmlos, ein
+  Muster davon nicht — und nur geloggte Ablehnungen lassen sich auswerten.
+- **Die Boundary loggt den Akteur**, der Service das Ereignis. Der Service kennt
+  den angemeldeten Benutzer nicht; ihn dort hineinzureichen hieße, Control von
+  Security abhängig zu machen.
 
 ## Tests
 

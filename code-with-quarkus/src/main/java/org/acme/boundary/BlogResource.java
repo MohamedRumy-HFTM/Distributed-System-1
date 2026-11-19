@@ -18,6 +18,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.jboss.resteasy.reactive.RestPath;
 
+import io.quarkus.logging.Log;
 import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
@@ -148,6 +149,8 @@ public class BlogResource {
         blogService.addBlog(blog);
 
         // Aus /blogs wird /blogs/{neueId} - der Client muss die Id nicht erraten.
+        Log.infof("Blog %d von %s angelegt", blog.getId(), blog.getAuthor());
+
         UriBuilder builder = uriInfo.getAbsolutePathBuilder().path(Long.toString(blog.getId()));
         return Response.created(builder.build()).entity(BlogResponse.from(blog)).build();
     }
@@ -230,6 +233,7 @@ public class BlogResource {
         requireOwnerOrAdmin(existing);
 
         blogService.deleteBlog(id);
+        Log.infof("Blog %d durch %s geloescht", id, identity.getPrincipal().getName());
         return Response.noContent().build();
     }
 
@@ -276,6 +280,8 @@ public class BlogResource {
         if (created == null) {
             throw new ResponseException(Status.NOT_FOUND, "Kein Blog mit der Id " + id);
         }
+        Log.infof("Kommentar %d an Blog %d durch %s", created.getId(), id, identity.getPrincipal().getName());
+
         return Response.created(uriInfo.getAbsolutePathBuilder().path(Long.toString(created.getId())).build())
                 .entity(created)
                 .build();
@@ -294,10 +300,16 @@ public class BlogResource {
      */
     private void requireOwnerOrAdmin(Blog blog) {
         if (identity.hasRole("admin")) {
+            Log.infof("Admin %s greift auf Blog %d von %s zu",
+                    identity.getPrincipal().getName(), blog.getId(), blog.getAuthor());
             return;
         }
         String currentUser = identity.getPrincipal().getName();
         if (!currentUser.equals(blog.getAuthor())) {
+            // Abgewiesene Zugriffe gehoeren ins Log: nur so faellt auf, wenn
+            // jemand systematisch fremde Beitraege anfasst.
+            Log.warnf("Zugriff verweigert: %s wollte Blog %d von %s aendern oder loeschen",
+                    currentUser, blog.getId(), blog.getAuthor());
             throw new ResponseException(Status.FORBIDDEN,
                     "Blog " + blog.getId() + " gehoert " + blog.getAuthor() + ", nicht " + currentUser);
         }
