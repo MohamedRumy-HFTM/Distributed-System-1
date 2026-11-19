@@ -278,25 +278,93 @@ KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"   # JWKS unter der benutzten Adresse
 Der Issuer bleibt damit stabil, während die App die Signaturschlüssel über ihren
 eigenen Weg bekommt. Ein `quarkus.oidc.token.issuer`-Override ist nicht nötig.
 
-### Image selbst bauen
+### Image selbst bauen und veröffentlichen
+
+Zuerst die Anwendung packen:
 
 ```bash
 export JAVA_HOME=$PWD/.jdks/jdk-25.0.3+9/Contents/Home
 ./mvnw package
-docker build -f src/main/docker/Dockerfile.jvm -t ghcr.io/mohamedrumy-hftm/blog-api:latest .
 ```
 
-### Auf GitHub Packages veröffentlichen
-
-Erfordert ein Personal Access Token mit `write:packages`:
+Anmelden (Personal Access Token mit `write:packages`, bei `Password:` einfügen):
 
 ```bash
-echo "$GHCR_TOKEN" | docker login ghcr.io -u MohamedRumy-HFTM --password-stdin
-docker push ghcr.io/mohamedrumy-hftm/blog-api:latest
+docker login ghcr.io -u MohamedRumy-HFTM
 ```
 
-Danach das Paket auf **Public** stellen: GitHub → Profil → *Packages* →
+Dann bauen **und** pushen — in einem Schritt, für beide Architekturen:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f src/main/docker/Dockerfile.jvm \
+  -t ghcr.io/mohamedrumy-hftm/blog-api:latest --push .
+```
+
+> **Immer `buildx` mit beiden Plattformen.** Ein einfaches `docker build` auf
+> einem Apple-Silicon-Mac erzeugt ein reines `arm64`-Image. Wer das pusht,
+> ersetzt den Multi-Arch-Index — und auf einem amd64-Rechner scheitert
+> anschließend jeder `docker pull` mit *„no matching manifest for
+> linux/amd64"*. Das Image wäre öffentlich und trotzdem unbrauchbar.
+
+Prüfen, welche Plattformen tatsächlich veröffentlicht sind:
+
+```bash
+docker buildx imagetools inspect ghcr.io/mohamedrumy-hftm/blog-api:latest
+```
+
+Sichtbarkeit nur beim ersten Mal nötig: GitHub → Profil → *Packages* →
 `blog-api` → *Package settings* → *Change visibility* → Public.
+
+## Natives Image im Vergleich
+
+Zusätzlich als GraalVM-Native-Image gebaut, um Startzeit und Speicherbedarf
+gegen das JVM-Image zu messen. Beide Messungen auf demselben Rechner
+(Apple Silicon, 16 CPUs), gegen dieselben Umsysteme, Beispieldaten abgeschaltet.
+
+| | JVM-Image | Native-Image | Faktor |
+|---|---|---|---|
+| **Startzeit** | 1,465 s | **0,226 s** | 6,5× schneller |
+| **Speicher nach Start** (RSS) | 364,2 MiB | **20,7 MiB** | 18× weniger |
+| **Image-Größe** (`docker images`) | 731 MB | **180 MB** | 4× kleiner |
+| **Bauzeit** | ~20 s | ~70 s (davon 46 s native-image) | 3,5× langsamer |
+
+Funktional identisch — die komplette Berechtigungsmatrix wurde gegen das native
+Image geprüft: `200` / `401` / `201` / `200` / `403`, und das Logging erscheint
+unverändert, inklusive `Zugriff verweigert: …`.
+
+### Selbst bauen
+
+```bash
+export JAVA_HOME=$PWD/.jdks/jdk-25.0.3+9/Contents/Home
+./mvnw package -Dnative -Dquarkus.native.container-build=true -Dquarkus.native.native-image-xmx=5g
+docker build -f src/main/docker/Dockerfile.native-micro -t blog-api:native .
+```
+
+`container-build=true` heißt: kein lokales GraalVM nötig, der Bau läuft in einem
+Mandrel-Container. Der braucht Arbeitsspeicher — mit weniger als etwa 6 GB für
+Docker bricht er ab. Das `native-image-xmx=5g` lässt in einer 8-GB-Zuteilung
+noch Luft.
+
+### Was der Vergleich bedeutet
+
+- **Der Gewinn liegt beim Start, nicht im Betrieb.** 0,2 s statt 1,5 s ist für
+  Serverless oder häufig skalierende Container entscheidend; bei einem Dienst,
+  der wochenlang läuft, zählt es einmal.
+- **Der Speichervorteil ist der eigentliche Hebel.** 20 MiB statt 364 MiB heißt,
+  dass auf derselben Maschine ein Vielfaches an Instanzen Platz hat.
+- **Bezahlt wird mit Bauzeit und Flexibilität.** Der Bau dauert hier dreimal so
+  lang; auf schwächeren Rechnern deutlich mehr. Und Reflection muss zur Bauzeit
+  bekannt sein — Quarkus erledigt das für seine Extensions, eigener Code mit
+  dynamischer Reflection bräuchte Konfiguration.
+
+### Warum `:latest` das JVM-Image bleibt
+
+Das native Binary ist für **genau eine Architektur** kompiliert, hier `arm64`.
+Eine amd64-Variante bräuchte einen amd64-Builder; unter Emulation wäre der Bau
+unbrauchbar langsam. Veröffentlicht ist deshalb das JVM-Image als Multi-Arch —
+es läuft überall. Das native Image ist hier ein **Messvergleich**, kein
+Abgabeartefakt.
 
 ## Auth-Setup austesten
 
@@ -451,9 +519,52 @@ Zwei bewusste Entscheidungen:
   den angemeldeten Benutzer nicht; ihn dort hineinzureichen hieße, Control von
   Security abhängig zu machen.
 
+## Blackbox-Integrationstests
+
+Zusätzlich zu den 68 In-JVM-Tests laufen 7 Tests gegen das **gepackte
+Artefakt** — ein eigener Prozess, echte MySQL, echtes Keycloak, echte Tokens.
+
+```bash
+./mvnw verify -DskipITs=false
+```
+
+`BlackboxEnvironment` startet die Umsysteme per Testcontainers und übergibt
+ihre Adressen an das gestartete Artefakt. Im Maven-Log lässt sich nachlesen,
+dass wirklich ein fremder Prozess getestet wird:
+
+```
+java -Dquarkus.profile=prod \
+     -Dquarkus.datasource.jdbc.url=jdbc:mysql://localhost:63949/quarkus \
+     -Dquarkus.oidc.auth-server-url=http://localhost:63991/realms/blog \
+     -jar target/quarkus-app/quarkus-run.jar
+```
+
+### Warum das mehr prüft als ein `@QuarkusTest`
+
+| | `@QuarkusTest` | `@QuarkusIntegrationTest` |
+|---|---|---|
+| Anwendung | in derselben JVM | eigener Prozess, gepacktes Artefakt |
+| Profil | `test` | `prod` |
+| Identität | `@TestSecurity`, künstlich | echtes Bearer-Token von Keycloak |
+| Datenbank | Dev Services | echte MySQL per Testcontainers |
+
+Dadurch fallen genau die Fehler auf, die ein `@QuarkusTest` nie sieht: eine
+falsche `%prod`-Konfiguration, ein Artefakt das nicht startet, eine
+Token-Validierung die am echten Issuer scheitert, oder Rollen die aus
+`realm_access.roles` nicht ankommen.
+
+Die 7 Tests decken ab: Start und Startdaten, echtes Token mit Rollen, `401`
+ohne Token, `403` bei falscher Rolle, Eigentümer-Regel inklusive
+Admin-Durchgriff, Validierung, und dass `/q/openapi` vorhanden aber
+`/q/swagger-ui` im Prod-Profil `404` ist.
+
+Keycloak muss hier **nicht** die `KC_HOSTNAME`-Akrobatik aus
+`docker-compose.yml` machen: Anwendung und Test laufen beide auf dem Host und
+erreichen Keycloak unter derselben Adresse, also stimmt der Issuer von selbst.
+
 ## Tests
 
-68 Tests, Coverage 87,6 % Zeilen / 87,1 % Zweige. Laufen **ohne Keycloak**:
+68 In-JVM-Tests, Coverage 87,6 % Zeilen / 87,1 % Zweige. Laufen **ohne Keycloak**:
 `%test.quarkus.oidc.enabled=false`, die Identität kommt aus `@TestSecurity`.
 Damit kostet der Testlauf keinen zusätzlichen Container.
 
@@ -466,3 +577,4 @@ Damit kostet der Testlauf keinen zusätzlichen Container.
 | `BlogServiceTest` | Service- und Repository-Ebene |
 | `ExceptionMappersTest` | Mapper-Zweige, die über HTTP nicht erreichbar sind |
 | `DataInitializationTest` | Idempotenz der Startdaten |
+| `BlogBlackboxIT` | gepacktes Artefakt mit echten Tokens (siehe oben) |
