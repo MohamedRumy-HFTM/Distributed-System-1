@@ -51,6 +51,17 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-hibernate-orm-panache</artifactId>
         </dependency>
+        <!-- Flyway besitzt das DB-Schema. Beide Artefakte sind noetig:
+             quarkus-flyway-mysql deklariert quarkus-flyway nur als "provided"
+             und bringt es deshalb NICHT transitiv mit. -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-flyway-mysql</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-openapi</artifactId>

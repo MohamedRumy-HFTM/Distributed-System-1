@@ -252,12 +252,10 @@ müssen von außen kommen. Alles über Umgebungsvariablen, nichts im Image:
 | `BLOG_DB_URL` | `jdbc:mysql://localhost:3306/quarkus` | JDBC-URL |
 | `BLOG_DB_USER` / `BLOG_DB_PASSWORD` | `quarkus` / `quarkus` | DB-Zugang |
 | `BLOG_OIDC_URL` | `http://localhost:8180/realms/blog` | Keycloak-Realm |
-| `BLOG_SCHEMA_STRATEGY` | `drop-and-create` | Schema-Erzeugung |
 | `BLOG_SEED_DATA` | `true` | Beispieldaten anlegen |
 
-`drop-and-create` ist eine **Demo-Einstellung**, damit ein Prüfer ein frisches,
-funktionierendes System bekommt. Für echten Betrieb auf `none` setzen und das
-Schema per Migration verwalten.
+Das Schema wird **nicht** mehr konfiguriert — darum kümmert sich Flyway
+(siehe unten). Dadurch überleben Daten einen Neustart der Anwendung.
 
 Geheimnisse gehören in `.env` (per `.gitignore` ausgeschlossen); eingecheckt ist
 nur `.env.example` mit Platzhaltern.
@@ -315,6 +313,64 @@ docker buildx imagetools inspect ghcr.io/mohamedrumy-hftm/blog-api:latest
 
 Sichtbarkeit nur beim ersten Mal nötig: GitHub → Profil → *Packages* →
 `blog-api` → *Package settings* → *Change visibility* → Public.
+
+## Datenbank-Migrationen mit Flyway
+
+Das Schema liegt in versionierten SQL-Dateien unter
+`src/main/resources/db/migration` und wird beim Start eingespielt:
+
+```properties
+quarkus.flyway.migrate-at-start=true
+quarkus.hibernate-orm.schema-management.strategy=validate
+```
+
+**Flyway besitzt das Schema, Hibernate prüft es nur noch.** Das ist die
+eigentliche Aussage dieser Konfiguration — und `validate` ist dabei die
+wichtigere Hälfte: Weicht eine Migration von den Entities ab, scheitert der
+Start sofort und mit klarer Meldung, statt irgendwann im Betrieb an einer
+fehlenden Spalte.
+
+| Datei | Inhalt |
+|---|---|
+| `V1__init.sql` | `Blog`, `Comment`, Fremdschlüssel, Sequenztabellen |
+
+Flyway führt zusätzlich die Tabelle `flyway_schema_history` — daran erkennt es
+beim nächsten Start, dass `V1` schon eingespielt ist, und tut nichts mehr.
+
+### Woher die DDL kommt
+
+Nicht von Hand geschrieben, sondern aus dem Stand ausgelesen, den Hibernate
+vorher per `drop-and-create` erzeugt hatte (`mysqldump --no-data`). Zwei Details
+hätte man beim Abtippen falsch gemacht:
+
+- **`title` und `content` sind `NOT NULL`.** Hibernate übersetzt `@NotBlank` in
+  eine DDL-Einschränkung, nicht nur `@NotNull`. `author` bleibt nullable, weil
+  es der Server setzt.
+- **Die Sequenztabellen brauchen eine Startzeile.** MySQL kennt keine
+  Sequences, also hält Hibernate den Zähler für `@GeneratedValue` je Entity in
+  einer Tabelle. Ohne `INSERT INTO Blog_SEQ (next_val) VALUES (1)` findet der
+  Generator beim ersten Insert keinen Wert.
+
+### Was sich dadurch ändert
+
+Vorher wurde das Schema bei jedem Start neu erzeugt, die Datenbank war also
+immer leer. Jetzt bleiben Daten erhalten:
+
+```
+erster Start:   Migrating schema to version "1 - init"
+                Data initialization created 2 blogs
+zweiter Start:  Successfully validated 1 migration     <- Flyway tut nichts
+                Data initialization skipped, 3 blogs already present
+```
+
+Damit wird die Idempotenz-Prüfung in `DataInitialization` erst wirklich
+relevant — vorher lief sie nie in den Überspringen-Zweig.
+
+### Eine neue Migration hinzufügen
+
+Nächste Datei `V2__beschreibung.sql` anlegen, nie eine bestehende ändern:
+Flyway speichert eine Prüfsumme und verweigert den Start, wenn eine bereits
+eingespielte Migration nachträglich abweicht.
 
 ## Natives Image im Vergleich
 
@@ -495,6 +551,137 @@ aber falsche Rolle) — im Unterschied zu **401** ohne Token. Mit einem
 3. Oben rechts auf **Authorize**, bei `bearerAuth` `Bearer <TOKEN>` eintragen.
 4. Jetzt liefern `POST`/`PUT`/`DELETE` statt `401` die echten Antworten. Ohne
    den Schritt lassen sich nur die `@PermitAll`-Endpunkte ausprobieren.
+
+## Use-Cases durchspielen
+
+Vollständiger Durchlauf von Null. Voraussetzungen: Docker und
+[HTTPie](https://httpie.io/docs/cli/installation).
+
+### 1. System starten
+
+```bash
+cd code-with-quarkus
+docker compose --profile full up -d
+```
+
+Warten, bis die API antwortet:
+
+```bash
+until http --ignore-stdin --check-status :8080/blogs >/dev/null 2>&1; do sleep 2; done
+echo "bereit"
+```
+
+### 2. Lesen ohne Login
+
+```bash
+http :8080/blogs
+http :8080/blogs/1
+http :8080/blogs/1/comments
+```
+
+Liefert die beiden Startdaten-Blogs. `First Blog` gehört `author1`,
+`Second Blog` gehört `admin1` — das ist die Grundlage für Schritt 6.
+
+### 3. Token abholen
+
+```bash
+TOKEN=$(http --ignore-stdin --form POST :8180/realms/blog/protocol/openid-connect/token \
+  grant_type=password client_id=blog-api username=author1 password=author1 \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+```
+
+Rollen im Token prüfen (oder das Token auf <https://jwt.io> einfügen):
+
+```bash
+echo "$TOKEN" | cut -d. -f2 | python3 -c "
+import sys, base64, json
+p = sys.stdin.read().strip()
+print(json.dumps(json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4))), indent=2))
+" | grep -A4 realm_access
+```
+
+### 4. Ohne Token schreiben schlägt fehl
+
+```bash
+http --ignore-stdin POST :8080/blogs title="Ohne Token" content="geht nicht"
+```
+
+→ **401**. Mit einem `reader1`-Token wäre es **403**: angemeldet, aber falsche
+Rolle.
+
+### 5. Blog anlegen und kommentieren
+
+```bash
+ID=$(http --ignore-stdin POST :8080/blogs "Authorization:Bearer $TOKEN" \
+  title="Mein neuer Beitrag" content="Ueber die API angelegt" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+
+http --ignore-stdin POST :8080/blogs/$ID/comments "Authorization:Bearer $TOKEN" \
+  author="author1" text="Erster Kommentar"
+
+http :8080/blogs/$ID/comments
+```
+
+Das Feld `author` der Antwort ist `author1` — gesetzt aus dem Token, nicht aus
+dem Request-Body.
+
+### 6. Eigentümerschaft
+
+```bash
+# Eigener Blog -> 200
+http --ignore-stdin PUT :8080/blogs/$ID "Authorization:Bearer $TOKEN" \
+  title="Eigener Beitrag geaendert" content="darf ich"
+
+# Fremder Blog (gehoert admin1) -> 403
+http --ignore-stdin PUT :8080/blogs/2 "Authorization:Bearer $TOKEN" \
+  title="Fremder Beitrag" content="darf ich nicht"
+```
+
+Mit einem `admin1`-Token geht derselbe fremde Blog:
+
+```bash
+ADMIN=$(http --ignore-stdin --form POST :8180/realms/blog/protocol/openid-connect/token \
+  grant_type=password client_id=blog-api username=admin1 password=admin1 \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+
+http --ignore-stdin PUT :8080/blogs/2 "Authorization:Bearer $ADMIN" \
+  title="Admin greift durch" content="darf ich"
+```
+
+### 7. Suchen, sortieren, blättern
+
+```bash
+http ":8080/blogs?searchString=beitrag"
+http ":8080/blogs?sortBy=title&orderBy=desc"
+http ":8080/blogs?page=0&size=1"
+```
+
+### 8. Validierung
+
+```bash
+http --ignore-stdin POST :8080/blogs "Authorization:Bearer $TOKEN" \
+  title="kurz" content="Titel zu kurz"
+```
+
+→ **400** mit Feld und Regel:
+`{"status":400,"title":"Constraint Violation","violations":[{"field":"title","message":"Titel braucht mindestens 5 Zeichen."}]}`
+
+### 9. Löschen und Neustart
+
+```bash
+http --ignore-stdin DELETE :8080/blogs/$ID "Authorization:Bearer $TOKEN"
+
+# Daten ueberleben einen Neustart der Anwendung - dank Flyway statt drop-and-create
+docker compose --profile full restart blog-api
+until http --ignore-stdin --check-status :8080/blogs >/dev/null 2>&1; do sleep 2; done
+http :8080/blogs
+```
+
+### Aufräumen
+
+```bash
+docker compose --profile full down -v
+```
 
 ## Logging
 
